@@ -1,0 +1,2369 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Team Circuit Breakers | Adaptive Cruise Control (ACC)</title>
+
+  <!-- Google Fonts: Space Grotesk (Display), Inter (Body), JetBrains Mono (HUD Telemetry) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            navy: {
+              950: '#070D1F',
+              900: '#0B132B',
+              850: '#0F1A36',
+              800: '#142142',
+              750: '#111C38',
+              700: '#1C2E5A',
+            },
+            hud: {
+              cyan: '#00B4D8',
+              cruise: '#10B981',
+              follow: '#F59E0B',
+              estop: '#EF4444',
+              idle: '#94A3B8',
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            display: ['Space Grotesk', 'Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    /* Base cockpit HUD styling & custom range sliders */
+    body {
+      background-color: #0B132B;
+      color: #F8FAFC;
+      overflow-x: hidden;
+    }
+
+    .hud-grid-bg {
+      background-image:
+        linear-gradient(to right, rgba(0, 180, 216, 0.06) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(0, 180, 216, 0.06) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+
+    .hud-card {
+      background: linear-gradient(145deg, rgba(20, 33, 66, 0.92), rgba(14, 24, 50, 0.95));
+      border: 1px solid rgba(56, 189, 248, 0.16);
+      box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.55);
+    }
+
+    .hud-card-hover {
+      transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+    }
+
+    .hud-card-hover:hover {
+      transform: translateY(-3px);
+      border-color: rgba(0, 180, 216, 0.45);
+      box-shadow: 0 14px 36px -10px rgba(0, 180, 216, 0.18);
+    }
+
+    /* Custom cockpit range sliders */
+    input[type="range"].hud-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: 999px;
+      background: #1E293B;
+      outline: none;
+    }
+
+    input[type="range"].hud-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #00B4D8;
+      border: 2px solid #E0F2FE;
+      cursor: pointer;
+      box-shadow: 0 0 10px rgba(0, 180, 216, 0.65);
+      transition: transform 0.15s ease;
+    }
+
+    input[type="range"].hud-slider::-webkit-slider-thumb:hover {
+      transform: scale(1.15);
+    }
+
+    input[type="range"].hud-slider::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #00B4D8;
+      border: 2px solid #E0F2FE;
+      cursor: pointer;
+      box-shadow: 0 0 10px rgba(0, 180, 216, 0.65);
+    }
+
+    /* Pulse animation for live status indicator */
+    @keyframes pulseRing {
+      0% { transform: scale(0.95); opacity: 0.9; }
+      70% { transform: scale(1.55); opacity: 0; }
+      100% { transform: scale(1.55); opacity: 0; }
+    }
+
+    .pulse-dot::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 9999px;
+      background: currentColor;
+      animation: pulseRing 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+    }
+
+    /* Canvas responsive container helpers */
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body class="font-sans antialiased selection:bg-hud-cyan/30 selection:text-cyan-100">
+
+  <!-- Toast Notification (replaces alert()) -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 pointer-events-none opacity-0 translate-y-3 transition-all duration-300">
+    <div class="flex items-center gap-3 rounded-xl bg-navy-800 border border-hud-cyan/50 px-4 py-3 shadow-2xl text-sm text-slate-100">
+      <span class="w-2.5 h-2.5 rounded-full bg-hud-cyan"></span>
+      <span id="toastMessage">Notification</span>
+    </div>
+  </div>
+
+  <!-- =================================================================== -->
+  <!-- NAVIGATION BAR                                                      -->
+  <!-- =================================================================== -->
+  <header class="sticky top-0 z-40 backdrop-blur-md bg-navy-900/85 border-b border-slate-800/80">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16 sm:h-18">
+        <!-- Brand Logo -->
+        <a href="#hero" class="flex items-center gap-3 group">
+          <div class="w-10 h-10 rounded-xl bg-hud-cyan/15 border border-hud-cyan/40 flex items-center justify-center group-hover:bg-hud-cyan/25 transition">
+            <!-- Inline SVG Radar Car Icon -->
+            <svg class="w-6 h-6 text-hud-cyan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 17h14v-4l-2-5H7l-2 5v4z" />
+              <circle cx="7.5" cy="17" r="1.5" />
+              <circle cx="16.5" cy="17" r="1.5" />
+              <path d="M8.5 5.2a6.5 6.5 0 0 1 7 0" />
+              <path d="M6.2 2.8a10 10 0 0 1 11.6 0" />
+            </svg>
+          </div>
+          <div class="flex flex-col leading-tight">
+            <span class="font-display font-bold tracking-wider text-sm sm:text-base text-white">
+              CIRCUIT BREAKERS <span class="text-hud-cyan">| ACC</span>
+            </span>
+            <span class="font-mono text-[10px] text-slate-400 tracking-widest uppercase">IIT Ropar • Tinkering Lab</span>
+          </div>
+        </a>
+
+        <!-- Desktop Navigation Links -->
+        <nav class="hidden lg:flex items-center gap-7 text-sm font-medium text-slate-300">
+          <a href="#applications" class="hover:text-hud-cyan transition">Real-Life Applications</a>
+          <a href="#simulator" class="hover:text-hud-cyan transition">Live Simulator</a>
+          <a href="#control-logic" class="hover:text-hud-cyan transition">Control Logic</a>
+          <a href="#safety" class="hover:text-hud-cyan transition">Safety</a>
+          <a href="#hardware" class="hover:text-hud-cyan transition">Hardware &amp; CAD</a>
+        </nav>
+
+        <!-- Primary CTA + Mobile Toggle -->
+        <div class="flex items-center gap-3">
+          <a href="#simulator" class="hidden sm:inline-flex items-center gap-2 rounded-xl bg-hud-cyan hover:bg-cyan-400 text-navy-950 font-semibold text-sm px-4 py-2.5 shadow-lg shadow-hud-cyan/20 transition">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20" /></svg>
+            Try Live Simulator
+          </a>
+          <button id="mobileMenuBtn" type="button" aria-label="Toggle Menu" class="lg:hidden p-2.5 rounded-xl bg-navy-800 border border-slate-700 text-slate-200 hover:text-hud-cyan transition">
+            <svg id="menuIconOpen" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            <svg id="menuIconClose" class="w-5 h-5 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mobile Dropdown Menu -->
+    <div id="mobileMenu" class="hidden lg:hidden border-t border-slate-800 bg-navy-900/95 px-4 py-4 space-y-2">
+      <a href="#applications" class="mobile-nav-link block px-3 py-2.5 rounded-xl text-slate-200 hover:bg-navy-800 hover:text-hud-cyan transition">Real-Life Applications</a>
+      <a href="#simulator" class="mobile-nav-link block px-3 py-2.5 rounded-xl text-slate-200 hover:bg-navy-800 hover:text-hud-cyan transition">Live Simulator</a>
+      <a href="#control-logic" class="mobile-nav-link block px-3 py-2.5 rounded-xl text-slate-200 hover:bg-navy-800 hover:text-hud-cyan transition">Control Logic</a>
+      <a href="#safety" class="mobile-nav-link block px-3 py-2.5 rounded-xl text-slate-200 hover:bg-navy-800 hover:text-hud-cyan transition">Safety &amp; FSM</a>
+      <a href="#hardware" class="mobile-nav-link block px-3 py-2.5 rounded-xl text-slate-200 hover:bg-navy-800 hover:text-hud-cyan transition">Hardware &amp; CAD</a>
+      <a href="#simulator" class="mobile-nav-link block text-center mt-2 rounded-xl bg-hud-cyan text-navy-950 font-semibold py-2.5">Try Live Simulator</a>
+    </div>
+  </header>
+
+  <!-- =================================================================== -->
+  <!-- 1. HERO SECTION                                                     -->
+  <!-- =================================================================== -->
+  <section id="hero" class="relative hud-grid-bg overflow-hidden border-b border-slate-800/80">
+    <!-- Subtle Ambient Cyan Glow -->
+    <div class="pointer-events-none absolute -top-24 left-1/4 w-96 h-96 rounded-full bg-hud-cyan/10 blur-3xl"></div>
+    <div class="pointer-events-none absolute bottom-0 right-1/4 w-80 h-80 rounded-full bg-hud-cruise/10 blur-3xl"></div>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 sm:py-20 lg:py-24 relative z-10">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
+
+        <!-- Left Hero Copy -->
+        <div class="lg:col-span-7 space-y-6">
+          <div class="inline-flex items-center gap-2.5 rounded-full bg-hud-cyan/10 border border-hud-cyan/30 px-4 py-1.5">
+            <span class="relative w-2 h-2 rounded-full bg-hud-cyan text-hud-cyan pulse-dot"></span>
+            <span class="font-mono text-[11px] sm:text-xs font-semibold tracking-wider text-cyan-300 uppercase">
+              Team Circuit Breakers • CSE, IIT Ropar • Tinkering Lab
+            </span>
+          </div>
+
+          <h1 class="font-display text-3xl sm:text-5xl lg:text-[3.35rem] font-bold tracking-tight text-white leading-[1.1]">
+            Adaptive Cruise Control:
+            <span class="block text-transparent bg-clip-text bg-gradient-to-r from-hud-cyan via-sky-300 to-hud-cruise mt-1">
+              Real-World Highway Safety Meets Embedded Control
+            </span>
+          </h1>
+
+          <p class="text-slate-300 text-base sm:text-lg leading-relaxed max-w-2xl">
+            Modern Adaptive Cruise Control (ACC) holds a driver-selected cruising speed when the highway ahead is clear, and automatically modulates throttle and braking to maintain a speed-proportional safe time-gap whenever slower traffic enters the lane. Our scaled 4WD prototype brings this automotive ADAS architecture to life on an ESP32 microcontroller.
+          </p>
+
+          <!-- 4 Metric Pills -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+            <div class="rounded-xl bg-navy-800/90 border border-slate-700/70 px-3.5 py-3">
+              <div class="font-mono text-hud-cyan font-bold text-base sm:text-lg">50 Hz</div>
+              <div class="text-xs text-slate-400 mt-0.5">Control Loop</div>
+            </div>
+            <div class="rounded-xl bg-navy-800/90 border border-slate-700/70 px-3.5 py-3">
+              <div class="font-mono text-hud-cruise font-bold text-base sm:text-lg">2-Layer</div>
+              <div class="text-xs text-slate-400 mt-0.5">Cascaded PID</div>
+            </div>
+            <div class="rounded-xl bg-navy-800/90 border border-slate-700/70 px-3.5 py-3">
+              <div class="font-mono text-hud-follow font-bold text-base sm:text-lg">Time-Gap</div>
+              <div class="text-xs text-slate-400 mt-0.5">Headway Policy</div>
+            </div>
+            <div class="rounded-xl bg-navy-800/90 border border-slate-700/70 px-3.5 py-3">
+              <div class="font-mono text-hud-estop font-bold text-base sm:text-lg">4-State</div>
+              <div class="text-xs text-slate-400 mt-0.5">Safety FSM</div>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="flex flex-wrap items-center gap-3.5 pt-2">
+            <a href="#simulator" class="inline-flex items-center gap-2 rounded-xl bg-hud-cyan hover:bg-cyan-400 text-navy-950 font-semibold px-6 py-3.5 shadow-lg shadow-hud-cyan/25 transition">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20" /></svg>
+              Launch Live Simulator
+            </a>
+            <a href="#applications" class="inline-flex items-center gap-2 rounded-xl bg-navy-800 hover:bg-navy-700 border border-slate-600/80 text-slate-100 font-medium px-6 py-3.5 transition">
+              Explore Real-Life Uses
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            </a>
+          </div>
+        </div>
+
+        <!-- Right Hero Animated ADAS Radar HUD Preview -->
+        <div class="lg:col-span-5">
+          <div class="hud-card rounded-2xl p-4 sm:p-5 relative overflow-hidden">
+            <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-700/60">
+              <div class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-hud-cruise"></span>
+                <span class="font-mono text-xs font-semibold text-slate-200 tracking-wider uppercase">ADAS RADAR / ToF LOCK</span>
+              </div>
+              <span class="font-mono text-[11px] px-2.5 py-0.5 rounded-full bg-hud-cyan/15 text-hud-cyan border border-hud-cyan/30">LIVE HUD</span>
+            </div>
+
+            <!-- Animated Hero Mini Canvas -->
+            <div class="relative w-full h-72 sm:h-80 rounded-xl overflow-hidden bg-navy-950 border border-slate-800">
+              <canvas id="heroCanvas" aria-label="Animated top-down Adaptive Cruise Control radar tracking preview"></canvas>
+            </div>
+
+            <!-- Live Mini HUD Footer Strip -->
+            <div class="grid grid-cols-3 gap-2.5 mt-3.5 font-mono text-center">
+              <div class="rounded-xl bg-navy-950/90 border border-slate-800 py-2 px-2">
+                <div class="text-[10px] text-slate-400 uppercase">Target Lock</div>
+                <div class="text-xs sm:text-sm font-bold text-hud-cyan mt-0.5">ACTIVE</div>
+              </div>
+              <div class="rounded-xl bg-navy-950/90 border border-slate-800 py-2 px-2">
+                <div class="text-[10px] text-slate-400 uppercase">Spacing Law</div>
+                <div class="text-xs sm:text-sm font-bold text-hud-follow mt-0.5">d₀ + T·v</div>
+              </div>
+              <div class="rounded-xl bg-navy-950/90 border border-slate-800 py-2 px-2">
+                <div class="text-[10px] text-slate-400 uppercase">Update Rate</div>
+                <div class="text-xs sm:text-sm font-bold text-hud-cruise mt-0.5">20 ms</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- =================================================================== -->
+  <!-- 2. REAL-LIFE APPLICATIONS & PRODUCTION-TO-PROTOTYPE BRIDGE          -->
+  <!-- =================================================================== -->
+  <section id="applications" class="py-16 sm:py-24 border-b border-slate-800/80">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <!-- Section Heading -->
+      <div class="max-w-3xl mb-12">
+        <span class="font-mono text-xs font-semibold tracking-widest text-hud-cyan uppercase">01 • Real-World Automotive Applications</span>
+        <h2 class="font-display text-3xl sm:text-4xl font-bold text-white mt-2">
+          How Adaptive Cruise Control Transforms Everyday Driving
+        </h2>
+        <p class="text-slate-400 mt-3 text-base sm:text-lg">
+          From multi-lane expressways to congested city corridors, ACC automates longitudinal speed control to prevent rear-end collisions, smooth traffic waves, and cut driver fatigue.
+        </p>
+      </div>
+
+      <!-- 4 Rich Real-Life Application Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-16">
+
+        <!-- Card 1 -->
+        <div class="hud-card hud-card-hover rounded-2xl p-6 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-hud-cruise/15 border border-hud-cruise/35 flex items-center justify-center text-hud-cruise">
+                <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19 8 5"/><path d="M20 19 16 5"/><path d="M12 6v2"/><path d="M12 11v2"/><path d="M12 16v3"/></svg>
+              </div>
+              <span class="font-mono text-xs px-2.5 py-1 rounded-full bg-hud-cruise/15 text-hud-cruise border border-hud-cruise/30">CRUISE MODE</span>
+            </div>
+            <h3 class="font-display text-xl font-bold text-white">Highway Cruising &amp; Fatigue Reduction</h3>
+            <p class="text-slate-300 text-sm sm:text-base mt-2.5 leading-relaxed">
+              Maintains a steady driver-selected expressway speed when the lane ahead is clear, then gently backs off the throttle when approaching slower vehicles—eliminating constant pedal adjustments during long journeys.
+            </p>
+          </div>
+          <div class="mt-5 pt-4 border-t border-slate-700/60 flex items-center justify-between">
+            <span class="font-mono text-xs text-slate-400">Closed-Loop Velocity Hold</span>
+            <button type="button" onclick="launchScenarioFromCard('clear')" class="text-xs font-semibold text-hud-cyan hover:text-cyan-300 inline-flex items-center gap-1 transition">
+              Simulate Clear Highway →
+            </button>
+          </div>
+        </div>
+
+        <!-- Card 2 -->
+        <div class="hud-card hud-card-hover rounded-2xl p-6 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-hud-follow/15 border border-hud-follow/35 flex items-center justify-center text-hud-follow">
+                <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="8" width="7" height="10" rx="2"/><rect x="14" y="6" width="7" height="12" rx="2"/><path d="M10 13h4"/></svg>
+              </div>
+              <span class="font-mono text-xs px-2.5 py-1 rounded-full bg-hud-follow/15 text-hud-follow border border-hud-follow/30">FOLLOW &amp; STOP</span>
+            </div>
+            <h3 class="font-display text-xl font-bold text-white">Stop-and-Go Urban Traffic Assist</h3>
+            <p class="text-slate-300 text-sm sm:text-base mt-2.5 leading-relaxed">
+              Automatically tracks decelerating traffic down to a smooth, complete halt at a guaranteed standstill buffer (<span class="font-mono text-amber-300">d₀</span>), and smoothly resumes acceleration as soon as the lead vehicle moves ahead.
+            </p>
+          </div>
+          <div class="mt-5 pt-4 border-t border-slate-700/60 flex items-center justify-between">
+            <span class="font-mono text-xs text-slate-400">Standstill Safety Buffer</span>
+            <button type="button" onclick="launchScenarioFromCard('stopgo')" class="text-xs font-semibold text-hud-cyan hover:text-cyan-300 inline-flex items-center gap-1 transition">
+              Simulate Stop &amp; Go →
+            </button>
+          </div>
+        </div>
+
+        <!-- Card 3 -->
+        <div class="hud-card hud-card-hover rounded-2xl p-6 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-hud-estop/15 border border-hud-estop/35 flex items-center justify-center text-hud-estop">
+                <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              </div>
+              <span class="font-mono text-xs px-2.5 py-1 rounded-full bg-hud-estop/15 text-hud-estop border border-hud-estop/30">E-STOP GUARD</span>
+            </div>
+            <h3 class="font-display text-xl font-bold text-white">Emergency Collision Mitigation (Cut-In Response)</h3>
+            <p class="text-slate-300 text-sm sm:text-base mt-2.5 leading-relaxed">
+              Detects sudden lane cut-ins or abrupt braking by a lead vehicle within milliseconds—far faster than human reaction time—immediately cutting throttle and commanding full emergency deceleration.
+            </p>
+          </div>
+          <div class="mt-5 pt-4 border-t border-slate-700/60 flex items-center justify-between">
+            <span class="font-mono text-xs text-slate-400">20–40 ms Hazard Response</span>
+            <button type="button" onclick="launchScenarioFromCard('cutin')" class="text-xs font-semibold text-hud-cyan hover:text-cyan-300 inline-flex items-center gap-1 transition">
+              Simulate Sudden Cut-In →
+            </button>
+          </div>
+        </div>
+
+        <!-- Card 4 -->
+        <div class="hud-card hud-card-hover rounded-2xl p-6 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-hud-cyan/15 border border-hud-cyan/35 flex items-center justify-center text-hud-cyan">
+                <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              </div>
+              <span class="font-mono text-xs px-2.5 py-1 rounded-full bg-hud-cyan/15 text-hud-cyan border border-hud-cyan/30">STRING STABILITY</span>
+            </div>
+            <h3 class="font-display text-xl font-bold text-white">Traffic Flow &amp; Energy Efficiency</h3>
+            <p class="text-slate-300 text-sm sm:text-base mt-2.5 leading-relaxed">
+              Constant time-gap spacing paired with acceleration slew-rate limiting dampens phantom "accordion" traffic waves across highway convoys, reducing unnecessary hard braking and improving fuel and EV battery efficiency.
+            </p>
+          </div>
+          <div class="mt-5 pt-4 border-t border-slate-700/60 flex items-center justify-between">
+            <span class="font-mono text-xs text-slate-400">Damped Smooth Acceleration</span>
+            <button type="button" onclick="launchScenarioFromCard('slow')" class="text-xs font-semibold text-hud-cyan hover:text-cyan-300 inline-flex items-center gap-1 transition">
+              Simulate Slow Traffic →
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Production Car ADAS -> Scaled Prototype Architecture Bridge -->
+      <div class="hud-card rounded-2xl overflow-hidden">
+        <div class="px-6 py-5 border-b border-slate-700/70 bg-navy-850/90 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h3 class="font-display text-xl font-bold text-white">From Highway ADAS to Scaled Lab Prototype</h3>
+            <p class="text-sm text-slate-400 mt-0.5">Direct 1-to-1 architectural mapping between production vehicles and Team Circuit Breakers' 4WD platform</p>
+          </div>
+          <span class="font-mono text-xs text-hud-cyan bg-hud-cyan/10 border border-hud-cyan/30 px-3 py-1 rounded-full self-start sm:self-center">ARCHITECTURE BRIDGE</span>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-slate-700/70 bg-navy-900/60 font-mono text-xs uppercase tracking-wider text-slate-400">
+                <th class="py-3.5 px-6">Subsystem</th>
+                <th class="py-3.5 px-6">Real-World Production Car ADAS</th>
+                <th class="py-3.5 px-6 text-hud-cyan">Circuit Breakers Scaled Prototype</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/80 text-sm">
+              <tr class="hover:bg-navy-800/50 transition">
+                <td class="py-4 px-6 font-semibold text-slate-200 whitespace-nowrap">Forward Sensing</td>
+                <td class="py-4 px-6 text-slate-300">77 GHz Millimeter-Wave Radar / Automotive LiDAR</td>
+                <td class="py-4 px-6 text-cyan-200 font-medium">VL53L0X Time-of-Flight Laser + HC-SR04 Ultrasonic Backup</td>
+              </tr>
+              <tr class="hover:bg-navy-800/50 transition">
+                <td class="py-4 px-6 font-semibold text-slate-200 whitespace-nowrap">Control Computer</td>
+                <td class="py-4 px-6 text-slate-300">Automotive Electronic Control Unit (ADAS ECU)</td>
+                <td class="py-4 px-6 text-cyan-200 font-medium">ESP32 Microcontroller running a 50 Hz fixed-rate control loop</td>
+              </tr>
+              <tr class="hover:bg-navy-800/50 transition">
+                <td class="py-4 px-6 font-semibold text-slate-200 whitespace-nowrap">Speed Feedback</td>
+                <td class="py-4 px-6 text-slate-300">ABS Wheel Speed Tone-Ring Sensors</td>
+                <td class="py-4 px-6 text-cyan-200 font-medium">Quadrature Wheel Encoders with Hardware Interrupts (ISR)</td>
+              </tr>
+              <tr class="hover:bg-navy-800/50 transition">
+                <td class="py-4 px-6 font-semibold text-slate-200 whitespace-nowrap">Longitudinal Actuation</td>
+                <td class="py-4 px-6 text-slate-300">Drive-by-Wire Electronic Throttle &amp; Hydraulic Brakes</td>
+                <td class="py-4 px-6 text-cyan-200 font-medium">Dual H-Bridge PWM Motor Driver + Acceleration Slew Limiter</td>
+              </tr>
+              <tr class="hover:bg-navy-800/50 transition">
+                <td class="py-4 px-6 font-semibold text-slate-200 whitespace-nowrap">Driver Interface</td>
+                <td class="py-4 px-6 text-slate-300">Digital Instrument Cluster / Windshield HUD</td>
+                <td class="py-4 px-6 text-cyan-200 font-medium">Angled 0.96&quot; I2C OLED Display + Mode Status LEDs</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =================================================================== -->
+  <!-- 3. INTERACTIVE REAL-LIFE ACC HIGHWAY SIMULATOR                      -->
+  <!-- =================================================================== -->
+  <section id="simulator" class="py-16 sm:py-24 bg-navy-950/70 border-b border-slate-800/80">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+      <!-- Simulator Header + Mode Switch -->
+      <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-6 mb-8">
+        <div>
+          <span class="font-mono text-xs font-semibold tracking-widest text-hud-cyan uppercase">02 • Interactive 50 Hz Physics Engine</span>
+          <h2 class="font-display text-3xl sm:text-4xl font-bold text-white mt-2">
+            Live Adaptive Cruise Control Simulator
+          </h2>
+          <p class="text-slate-400 mt-2 max-w-2xl text-sm sm:text-base">
+            Experience the exact 50 Hz two-layer cascaded PID controller, time-gap headway policy, and safety state machine running in real time. Switch seamlessly between real-world highway metrics and our scaled lab prototype.
+          </p>
+        </div>
+
+        <!-- Mode Switch Toggle -->
+        <div class="inline-flex p-1.5 rounded-2xl bg-navy-800 border border-slate-700/80 self-start lg:self-auto">
+          <button id="btnModeHighway" type="button" onclick="setSimMode('highway')" class="px-4 py-2.5 rounded-xl font-mono text-xs sm:text-sm font-semibold transition bg-hud-cyan text-navy-950 shadow">
+            Highway Mode (km/h &amp; m)
+          </button>
+          <button id="btnModeLab" type="button" onclick="setSimMode('lab')" class="px-4 py-2.5 rounded-xl font-mono text-xs sm:text-sm font-semibold transition text-slate-300 hover:text-white">
+            Lab Prototype (cm/s &amp; cm)
+          </button>
+        </div>
+      </div>
+
+      <!-- Main Simulator Workspace -->
+      <div class="grid grid-cols-1 xl:grid-cols-12 gap-6">
+
+        <!-- Left/Main: Animated Highway Canvas + Live Telemetry Plots (8 cols) -->
+        <div class="xl:col-span-8 space-y-6">
+
+          <!-- 2D Highway View Canvas Card -->
+          <div class="hud-card rounded-2xl p-4 sm:p-5">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div class="flex items-center gap-2.5">
+                <span id="simStatusDot" class="w-3 h-3 rounded-full bg-hud-cruise"></span>
+                <span class="font-mono text-xs sm:text-sm font-semibold text-white uppercase tracking-wider">2D Top-Down Sensor &amp; Lane View</span>
+              </div>
+              <div class="flex items-center gap-3 font-mono text-[11px] text-slate-400">
+                <span class="inline-flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-hud-cruise"></span>CRUISE</span>
+                <span class="inline-flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-hud-follow"></span>FOLLOW</span>
+                <span class="inline-flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-hud-estop"></span>E-STOP</span>
+              </div>
+            </div>
+
+            <div class="relative w-full h-64 sm:h-72 rounded-xl overflow-hidden bg-navy-950 border border-slate-800">
+              <canvas id="highwayCanvas" aria-label="Interactive Adaptive Cruise Control highway simulation"></canvas>
+            </div>
+
+            <!-- Live OLED / Cockpit Digital Cluster Strip -->
+            <div class="mt-4 rounded-xl bg-navy-950 border border-slate-700/80 p-3.5 sm:p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-800">
+                <div class="flex items-center gap-3">
+                  <span class="font-mono text-[11px] uppercase tracking-widest text-slate-400">SYSTEM STATE</span>
+                  <span id="oledStateBadge" class="font-mono text-xs sm:text-sm font-bold px-3 py-1 rounded-lg bg-hud-cruise/20 text-hud-cruise border border-hud-cruise/50">
+                    CRUISE
+                  </span>
+                </div>
+                <div id="scenarioBanner" class="font-mono text-xs text-cyan-300">
+                  Scenario: Slow Traffic Following
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5 font-mono">
+                <div class="rounded-lg bg-navy-900/90 border border-slate-800 p-2.5">
+                  <div class="text-[10px] text-slate-400 uppercase">Ego Speed</div>
+                  <div id="hudEgoSpeed" class="text-base sm:text-lg font-bold text-white mt-0.5">0.0</div>
+                  <div class="sim-speed-unit text-[10px] text-hud-cyan">km/h</div>
+                </div>
+                <div class="rounded-lg bg-navy-900/90 border border-slate-800 p-2.5">
+                  <div class="text-[10px] text-slate-400 uppercase">Lead Speed</div>
+                  <div id="hudLeadSpeed" class="text-base sm:text-lg font-bold text-slate-200 mt-0.5">0.0</div>
+                  <div class="sim-speed-unit text-[10px] text-slate-400">km/h</div>
+                </div>
+                <div class="rounded-lg bg-navy-900/90 border border-slate-800 p-2.5">
+                  <div class="text-[10px] text-slate-400 uppercase">Actual Gap</div>
+                  <div id="hudActualGap" class="text-base sm:text-lg font-bold text-hud-cyan mt-0.5">0.0</div>
+                  <div class="sim-dist-unit text-[10px] text-hud-cyan">m</div>
+                </div>
+                <div class="rounded-lg bg-navy-900/90 border border-slate-800 p-2.5">
+                  <div class="text-[10px] text-slate-400 uppercase">Desired Gap</div>
+                  <div id="hudDesiredGap" class="text-base sm:text-lg font-bold text-hud-follow mt-0.5">0.0</div>
+                  <div class="sim-dist-unit text-[10px] text-hud-follow">m</div>
+                </div>
+                <div class="rounded-lg bg-navy-900/90 border border-slate-800 p-2.5">
+                  <div class="text-[10px] text-slate-400 uppercase">Throttle / PWM</div>
+                  <div id="hudThrottle" class="text-base sm:text-lg font-bold text-hud-cruise mt-0.5">0%</div>
+                  <div id="hudPwmSub" class="text-[10px] text-slate-400">0 / 255</div>
+                </div>
+                <div class="rounded-lg bg-navy-900/90 border border-slate-800 p-2.5">
+                  <div class="text-[10px] text-slate-400 uppercase">Control Loop</div>
+                  <div class="text-base sm:text-lg font-bold text-emerald-400 mt-0.5">50 Hz</div>
+                  <div class="text-[10px] text-slate-400">dt = 20 ms</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dual-Trace Live Scrolling Telemetry Graph -->
+          <div class="hud-card rounded-2xl p-4 sm:p-5">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <span class="font-mono text-xs sm:text-sm font-semibold text-white uppercase tracking-wider">Real-Time Dual-Trace Telemetry Plotter</span>
+              <div class="flex flex-wrap items-center gap-3 font-mono text-[11px] text-slate-300">
+                <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0.5 bg-hud-cyan"></span>Actual Gap</span>
+                <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0.5 bg-hud-follow"></span>Desired Gap</span>
+                <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0.5 bg-hud-cruise"></span>Ego Speed</span>
+                <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0.5 bg-slate-300"></span>Lead Speed</span>
+              </div>
+            </div>
+            <div class="relative w-full h-56 sm:h-64 rounded-xl overflow-hidden bg-navy-950 border border-slate-800">
+              <canvas id="telemetryCanvas" aria-label="Real-time ACC gap and speed telemetry chart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Interactive Controls Panel (4 cols) -->
+        <div class="xl:col-span-4 space-y-5">
+          <div class="hud-card rounded-2xl p-5 sm:p-6 space-y-6">
+            <div>
+              <h3 class="font-display text-lg font-bold text-white">Real-Life Test Scenarios</h3>
+              <p class="text-xs text-slate-400 mt-1">Trigger automotive edge cases instantly to observe the 4-state FSM and PID response.</p>
+              <div class="grid grid-cols-2 gap-2.5 mt-3.5">
+                <button type="button" onclick="applyScenario('clear')" id="scBtn-clear" class="scenario-btn rounded-xl border border-slate-700 bg-navy-900/90 hover:border-hud-cruise/70 px-3 py-2.5 text-left transition">
+                  <div class="font-mono text-[11px] text-hud-cruise font-bold">01 • CRUISE</div>
+                  <div class="text-xs font-semibold text-white mt-0.5">Clear Highway</div>
+                </button>
+                <button type="button" onclick="applyScenario('slow')" id="scBtn-slow" class="scenario-btn rounded-xl border border-hud-cyan bg-hud-cyan/10 px-3 py-2.5 text-left transition">
+                  <div class="font-mono text-[11px] text-hud-follow font-bold">02 • FOLLOW</div>
+                  <div class="text-xs font-semibold text-white mt-0.5">Slow Traffic</div>
+                </button>
+                <button type="button" onclick="applyScenario('stopgo')" id="scBtn-stopgo" class="scenario-btn rounded-xl border border-slate-700 bg-navy-900/90 hover:border-hud-follow/70 px-3 py-2.5 text-left transition">
+                  <div class="font-mono text-[11px] text-amber-300 font-bold">03 • URBAN</div>
+                  <div class="text-xs font-semibold text-white mt-0.5">Stop &amp; Go</div>
+                </button>
+                <button type="button" onclick="applyScenario('cutin')" id="scBtn-cutin" class="scenario-btn rounded-xl border border-hud-estop/40 bg-hud-estop/10 hover:bg-hud-estop/20 px-3 py-2.5 text-left transition">
+                  <div class="font-mono text-[11px] text-hud-estop font-bold">04 • HAZARD</div>
+                  <div class="text-xs font-semibold text-white mt-0.5">Sudden Cut-In</div>
+                </button>
+              </div>
+            </div>
+
+            <!-- Parameter Sliders -->
+            <div class="space-y-4 pt-2 border-t border-slate-700/60">
+              <h3 class="font-display text-base font-bold text-white">Live Controller Tuning</h3>
+
+              <!-- Cruise Set Speed Slider -->
+              <div>
+                <div class="flex justify-between text-xs font-mono mb-1.5">
+                  <span class="text-slate-300">Cruise Set Speed (v_set)</span>
+                  <span id="valCruiseSlider" class="text-hud-cyan font-bold">90 km/h</span>
+                </div>
+                <input id="sliderCruise" type="range" min="0" max="120" step="1" value="90" class="hud-slider" />
+              </div>
+
+              <!-- Time-Gap Slider -->
+              <div>
+                <div class="flex justify-between text-xs font-mono mb-1.5">
+                  <span class="text-slate-300">Time-Gap Headway (T_gap)</span>
+                  <span id="valTimeGapSlider" class="text-hud-follow font-bold">1.2 s</span>
+                </div>
+                <input id="sliderTimeGap" type="range" min="0.6" max="2.2" step="0.1" value="1.2" class="hud-slider" />
+              </div>
+
+              <!-- Lead Vehicle Speed Slider -->
+              <div>
+                <div class="flex justify-between text-xs font-mono mb-1.5">
+                  <span class="text-slate-300">Lead Vehicle Speed</span>
+                  <span id="valLeadSlider" class="text-slate-200 font-bold">60 km/h</span>
+                </div>
+                <input id="sliderLead" type="range" min="0" max="120" step="1" value="60" class="hud-slider" />
+                <p class="text-[11px] text-slate-400 mt-1">Drag to manually accelerate or brake the car ahead.</p>
+              </div>
+            </div>
+
+            <!-- Emergency Kill Switch & Reset -->
+            <div class="space-y-3 pt-3 border-t border-slate-700/60">
+              <button id="btnKillSwitch" type="button" onclick="toggleKillSwitch()" class="w-full py-3.5 px-4 rounded-xl bg-hud-estop hover:bg-red-500 text-white font-display font-bold tracking-wide text-sm shadow-lg shadow-hud-estop/25 flex items-center justify-center gap-2.5 transition">
+                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5"/><path d="M12 16h.01"/></svg>
+                <span id="killSwitchText">MANUAL KILL SWITCH (E-STOP)</span>
+              </button>
+
+              <button type="button" onclick="resetSimulation()" class="w-full py-2.5 px-4 rounded-xl bg-navy-900 hover:bg-navy-700 border border-slate-600/80 text-slate-200 font-medium text-sm flex items-center justify-center gap-2 transition">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+                Reset Simulation
+              </button>
+            </div>
+
+            <!-- Active Equation Summary -->
+            <div class="rounded-xl bg-navy-950/90 border border-slate-800 p-3.5 font-mono text-xs space-y-1.5">
+              <div class="text-slate-400 uppercase text-[10px] tracking-wider">Active Headway Computation</div>
+              <div id="liveFormulaReadout" class="text-cyan-300 font-semibold">d_des = 4.0 + 1.2 × v(m/s)</div>
+              <div id="liveEstopReadout" class="text-red-400 text-[11px]">Hard E-Stop Trigger: d &lt; 2.5 m</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- =================================================================== -->
+  <!-- 4. CORE CONTROL LOGIC & TIME-GAP POLICY                             -->
+  <!-- =================================================================== -->
+  <section id="control-logic" class="py-16 sm:py-24 border-b border-slate-800/80">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+      <div class="max-w-3xl mb-12">
+        <span class="font-mono text-xs font-semibold tracking-widest text-hud-cyan uppercase">03 • Embedded Control Theory</span>
+        <h2 class="font-display text-3xl sm:text-4xl font-bold text-white mt-2">
+          Constant Time-Gap Policy &amp; Two-Layer Cascaded PID
+        </h2>
+        <p class="text-slate-400 mt-3 text-base sm:text-lg">
+          Rather than using a brittle fixed stopping distance, our controller dynamically expands headway with speed and separates outer gap regulation from inner wheel-speed tracking.
+        </p>
+      </div>
+
+      <!-- Top Row: Interactive Time-Gap Formula Card + EMA Filter Card -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-10">
+
+        <!-- Constant Time-Gap Formula + Interactive Mini Calculator -->
+        <div class="lg:col-span-7 hud-card rounded-2xl p-6 sm:p-7 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between gap-2 mb-4">
+              <span class="font-mono text-xs font-bold text-hud-cyan uppercase tracking-wider">Spacing Law (Lab Scale)</span>
+              <span class="font-mono text-[11px] px-2.5 py-0.5 rounded-full bg-hud-follow/15 text-hud-follow border border-hud-follow/30">Interactive Formula</span>
+            </div>
+
+            <div class="rounded-xl bg-navy-950 border border-hud-cyan/30 px-5 py-4 text-center font-mono text-xl sm:text-2xl md:text-3xl font-bold text-white tracking-tight">
+              d<sub class="text-hud-cyan">des</sub> = d<sub class="text-slate-400">0</sub> + T<sub class="text-hud-follow">gap</sub> &times; v
+            </div>
+
+            <div class="grid grid-cols-3 gap-3 mt-4 text-center font-mono text-xs">
+              <div class="rounded-xl bg-navy-900/90 border border-slate-800 p-2.5">
+                <div class="text-slate-400">Standstill d₀</div>
+                <div class="text-white font-bold text-sm mt-0.5">30 cm</div>
+              </div>
+              <div class="rounded-xl bg-navy-900/90 border border-slate-800 p-2.5">
+                <div class="text-slate-400">Time-Gap T_gap</div>
+                <div id="calcTgapVal" class="text-hud-follow font-bold text-sm mt-0.5">1.2 s</div>
+              </div>
+              <div class="rounded-xl bg-navy-900/90 border border-slate-800 p-2.5">
+                <div class="text-slate-400">Desired Gap d_des</div>
+                <div id="calcDdesVal" class="text-hud-cyan font-bold text-sm mt-0.5">120.0 cm</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Interactive Mini-Calculator Sliders -->
+          <div class="mt-5 pt-4 border-t border-slate-700/60 space-y-3.5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div class="flex justify-between font-mono text-xs mb-1">
+                  <span class="text-slate-300">Ego Speed (v)</span>
+                  <span id="calcSpeedLabel" class="text-hud-cruise font-bold">75 cm/s</span>
+                </div>
+                <input id="calcSpeedSlider" type="range" min="0" max="100" step="1" value="75" class="hud-slider" />
+              </div>
+              <div>
+                <div class="flex justify-between font-mono text-xs mb-1">
+                  <span class="text-slate-300">Headway (T_gap)</span>
+                  <span id="calcTgapLabel" class="text-hud-follow font-bold">1.2 s</span>
+                </div>
+                <input id="calcTgapSlider" type="range" min="0.6" max="2.0" step="0.1" value="1.2" class="hud-slider" />
+              </div>
+            </div>
+
+            <!-- Dynamic Headway Visual Bar -->
+            <div class="space-y-1.5">
+              <div class="flex justify-between font-mono text-[11px] text-slate-400">
+                <span>0 cm (E-Stop &lt;20)</span>
+                <span id="calcBreakdownText" class="text-cyan-300">30 cm standstill + 90.0 cm dynamic = 120.0 cm</span>
+              </div>
+              <div class="w-full h-3.5 rounded-full bg-navy-950 border border-slate-700 overflow-hidden flex">
+                <div style="width: 12.5%" class="bg-hud-estop/80 h-full" title="E-Stop Margin (<20 cm)"></div>
+                <div style="width: 6.25%" class="bg-slate-400 h-full" title="Standstill Margin (20-30 cm)"></div>
+                <div id="calcDynamicBar" style="width: 39%" class="bg-gradient-to-r from-hud-follow to-hud-cyan h-full transition-all duration-150" title="Velocity-Proportional Dynamic Headway"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- EMA Low-Pass Filter Card -->
+        <div class="lg:col-span-5 hud-card rounded-2xl p-6 sm:p-7 flex flex-col justify-between">
+          <div>
+            <span class="font-mono text-xs font-bold text-hud-cruise uppercase tracking-wider">Signal Conditioning</span>
+            <h3 class="font-display text-xl font-bold text-white mt-1.5">Exponential Moving Average (EMA) Filter</h3>
+            <p class="text-slate-300 text-sm mt-2 leading-relaxed">
+              Raw ToF laser and ultrasonic range measurements suffer from occasional surface scatter and echo jitter. We filter distance every 20 ms tick before it enters the outer gap loop:
+            </p>
+
+            <div class="mt-4 rounded-xl bg-navy-950 border border-hud-cruise/30 px-4 py-4 text-center font-mono text-sm sm:text-base font-bold text-emerald-300">
+              d<sub class="text-slate-400">filt</sub>[k] = 0.7 &middot; d<sub class="text-slate-400">filt</sub>[k&minus;1] + 0.3 &middot; d<sub class="text-slate-400">raw</sub>[k]
+            </div>
+          </div>
+
+          <ul class="mt-5 space-y-2.5 text-sm text-slate-300">
+            <li class="flex items-start gap-2.5">
+              <span class="mt-1.5 w-2 h-2 rounded-full bg-hud-cruise shrink-0"></span>
+              <span><strong>Zero Memory Overhead:</strong> Single-state recursive IIR filter ideal for embedded 50 Hz ESP32 loops.</span>
+            </li>
+            <li class="flex items-start gap-2.5">
+              <span class="mt-1.5 w-2 h-2 rounded-full bg-hud-cyan shrink-0"></span>
+              <span><strong>Fast Obstacle Response:</strong> Weight &alpha; = 0.3 suppresses jitter spikes while reaching 90% of a real step change in under 140 ms.</span>
+            </li>
+            <li class="flex items-start gap-2.5">
+              <span class="mt-1.5 w-2 h-2 rounded-full bg-hud-follow shrink-0"></span>
+              <span><strong>Smooth PWM Braking:</strong> Prevents high-frequency sensor noise from chattering motor drivers.</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Interactive 5-Stage Horizontal Cascaded Control Architecture -->
+      <div class="hud-card rounded-2xl p-6 sm:p-8">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6">
+          <div>
+            <h3 class="font-display text-xl sm:text-2xl font-bold text-white">5-Stage Cascaded Control Architecture</h3>
+            <p class="text-sm text-slate-400 mt-1">Click any stage block below to inspect its exact algorithm, inputs, outputs, and embedded safeguards.</p>
+          </div>
+          <span class="font-mono text-xs text-hud-cyan bg-hud-cyan/10 border border-hud-cyan/30 px-3 py-1 rounded-full self-start sm:self-center">INTERACTIVE DIAGRAM</span>
+        </div>
+
+        <!-- 5 Clickable Stage Blocks -->
+        <div class="grid grid-cols-1 md:grid-cols-5 gap-3 items-stretch relative">
+          <button type="button" onclick="selectPipelineStage(0)" data-stage="0" class="pipeline-btn text-left rounded-xl p-4 border-2 border-hud-cyan bg-hud-cyan/15 transition">
+            <div class="font-mono text-[11px] font-bold text-hud-cyan">STAGE 01</div>
+            <div class="font-display font-bold text-white text-sm sm:text-base mt-1">Dual Sensing &amp; EMA Filter</div>
+            <div class="font-mono text-[11px] text-slate-300 mt-2">ToF + HC-SR04 → d_filt</div>
+          </button>
+
+          <button type="button" onclick="selectPipelineStage(1)" data-stage="1" class="pipeline-btn text-left rounded-xl p-4 border border-slate-700 bg-navy-900/90 hover:border-hud-cyan/60 transition">
+            <div class="font-mono text-[11px] font-bold text-hud-follow">STAGE 02 • OUTER</div>
+            <div class="font-display font-bold text-white text-sm sm:text-base mt-1">Outer Gap Controller</div>
+            <div class="font-mono text-[11px] text-slate-300 mt-2">e_gap → v_raw</div>
+          </button>
+
+          <button type="button" onclick="selectPipelineStage(2)" data-stage="2" class="pipeline-btn text-left rounded-xl p-4 border border-slate-700 bg-navy-900/90 hover:border-hud-cyan/60 transition">
+            <div class="font-mono text-[11px] font-bold text-amber-300">STAGE 03 • LIMIT</div>
+            <div class="font-display font-bold text-white text-sm sm:text-base mt-1">Accel Slew-Rate Limiter</div>
+            <div class="font-mono text-[11px] text-slate-300 mt-2">|Δv/Δt| ≤ a_max → v_tgt</div>
+          </button>
+
+          <button type="button" onclick="selectPipelineStage(3)" data-stage="3" class="pipeline-btn text-left rounded-xl p-4 border border-slate-700 bg-navy-900/90 hover:border-hud-cyan/60 transition">
+            <div class="font-mono text-[11px] font-bold text-hud-cruise">STAGE 04 • INNER</div>
+            <div class="font-display font-bold text-white text-sm sm:text-base mt-1">Inner PID Speed Loop</div>
+            <div class="font-mono text-[11px] text-slate-300 mt-2">Anti-Windup → PWM</div>
+          </button>
+
+          <button type="button" onclick="selectPipelineStage(4)" data-stage="4" class="pipeline-btn text-left rounded-xl p-4 border border-slate-700 bg-navy-900/90 hover:border-hud-cyan/60 transition">
+            <div class="font-mono text-[11px] font-bold text-sky-300">STAGE 05 • PLANT</div>
+            <div class="font-display font-bold text-white text-sm sm:text-base mt-1">4WD Plant &amp; ISR Feedback</div>
+            <div class="font-mono text-[11px] text-slate-300 mt-2">Encoders → v_meas</div>
+          </button>
+        </div>
+
+        <!-- Closed-Loop Feedback Bar -->
+        <div class="mt-3 rounded-xl bg-navy-950/80 border border-dashed border-hud-cyan/35 px-4 py-2.5 flex items-center justify-center gap-2 font-mono text-xs text-cyan-300 text-center">
+          <span>&#9664;── CLOSED-LOOP FEEDBACK (50 Hz / 20 ms):</span>
+          <span class="text-slate-300">Wheel Encoder ISR velocity v_meas feeds both Inner PID Speed Error &amp; Outer Time-Gap d_des = d₀ + T_gap·v ──&#9496;</span>
+        </div>
+
+        <!-- Stage Detail Explanation Panel -->
+        <div id="stageDetailPanel" class="mt-5 rounded-xl bg-navy-950 border border-slate-700/80 p-5 sm:p-6">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h4 id="stageDetailTitle" class="font-display text-lg font-bold text-hud-cyan">Stage 01 — Dual Sensing &amp; EMA Filtering</h4>
+            <span id="stageDetailTag" class="font-mono text-xs px-2.5 py-1 rounded-lg bg-hud-cyan/15 text-hud-cyan border border-hud-cyan/30">Perception Layer</span>
+          </div>
+          <p id="stageDetailDesc" class="text-slate-300 text-sm sm:text-base leading-relaxed"></p>
+          <div id="stageDetailFormula" class="mt-4 rounded-lg bg-navy-900 border border-slate-800 px-4 py-3 font-mono text-xs sm:text-sm text-emerald-300"></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- =================================================================== -->
+  <!-- 5. SAFETY & 4-STATE MACHINE SECTION                                 -->
+  <!-- =================================================================== -->
+  <section id="safety" class="py-16 sm:py-24 bg-navy-950/60 border-b border-slate-800/80">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+      <div class="max-w-3xl mb-12">
+        <span class="font-mono text-xs font-semibold tracking-widest text-hud-cyan uppercase">04 • Supervisory Control &amp; Fail-Safes</span>
+        <h2 class="font-display text-3xl sm:text-4xl font-bold text-white mt-2">
+          Deterministic 4-State Machine &amp; 3-Tier Safety Defense
+        </h2>
+        <p class="text-slate-400 mt-3 text-base sm:text-lg">
+          Every 20 ms control cycle evaluates hardware safety interrupts, sensor validity, and headway thresholds to enforce unambiguous mode transitions.
+        </p>
+      </div>
+
+      <!-- 4 Color-Coded State Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-10">
+
+        <!-- IDLE -->
+        <div class="hud-card rounded-2xl p-6 border-t-4 border-t-hud-idle">
+          <div class="flex items-center justify-between mb-3">
+            <span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-slate-500/20 text-slate-300 border border-slate-500/40">STATE 01</span>
+            <span class="w-3 h-3 rounded-full bg-hud-idle"></span>
+          </div>
+          <h3 class="font-display text-2xl font-bold text-slate-200">IDLE</h3>
+          <p class="font-mono text-xs text-slate-400 mt-2">Entry: Boot-up or cruise setpoint &lt; 5 cm/s</p>
+          <ul class="mt-4 space-y-2 text-sm text-slate-300">
+            <li class="flex items-start gap-2"><span class="text-slate-400">▸</span>Motors commanded to 0 PWM.</li>
+            <li class="flex items-start gap-2"><span class="text-slate-400">▸</span>PID integral accumulator reset to zero.</li>
+            <li class="flex items-start gap-2"><span class="text-slate-400">▸</span>OLED shows standby telemetry.</li>
+          </ul>
+        </div>
+
+        <!-- CRUISE -->
+        <div class="hud-card rounded-2xl p-6 border-t-4 border-t-hud-cruise">
+          <div class="flex items-center justify-between mb-3">
+            <span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-hud-cruise/20 text-hud-cruise border border-hud-cruise/40">STATE 02</span>
+            <span class="w-3 h-3 rounded-full bg-hud-cruise shadow-sm shadow-hud-cruise"></span>
+          </div>
+          <h3 class="font-display text-2xl font-bold text-hud-cruise">CRUISE</h3>
+          <p class="font-mono text-xs text-slate-400 mt-2">Entry: Clear road (d &gt; d_des + margin)</p>
+          <ul class="mt-4 space-y-2 text-sm text-slate-300">
+            <li class="flex items-start gap-2"><span class="text-hud-cruise">▸</span>Green status LED illuminated.</li>
+            <li class="flex items-start gap-2"><span class="text-hud-cruise">▸</span>Inner PID tracks driver cruise setpoint.</li>
+            <li class="flex items-start gap-2"><span class="text-hud-cruise">▸</span>Outer gap loop cleanly bypassed.</li>
+          </ul>
+        </div>
+
+        <!-- FOLLOW -->
+        <div class="hud-card rounded-2xl p-6 border-t-4 border-t-hud-follow">
+          <div class="flex items-center justify-between mb-3">
+            <span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-hud-follow/20 text-hud-follow border border-hud-follow/40">STATE 03</span>
+            <span class="w-3 h-3 rounded-full bg-hud-follow shadow-sm shadow-hud-follow"></span>
+          </div>
+          <h3 class="font-display text-2xl font-bold text-hud-follow">FOLLOW</h3>
+          <p class="font-mono text-xs text-slate-400 mt-2">Entry: Lead car detected (d ≤ d_des + margin)</p>
+          <ul class="mt-4 space-y-2 text-sm text-slate-300">
+            <li class="flex items-start gap-2"><span class="text-hud-follow">▸</span>Amber status LED illuminated.</li>
+            <li class="flex items-start gap-2"><span class="text-hud-follow">▸</span>Outer gap loop sets target velocity.</li>
+            <li class="flex items-start gap-2"><span class="text-hud-follow">▸</span>Slew limiter ensures smooth speed match.</li>
+          </ul>
+        </div>
+
+        <!-- E-STOP -->
+        <div class="hud-card rounded-2xl p-6 border-t-4 border-t-hud-estop">
+          <div class="flex items-center justify-between mb-3">
+            <span class="font-mono text-xs font-bold px-2.5 py-1 rounded-md bg-hud-estop/20 text-hud-estop border border-hud-estop/40">STATE 04</span>
+            <span class="w-3 h-3 rounded-full bg-hud-estop shadow-sm shadow-hud-estop"></span>
+          </div>
+          <h3 class="font-display text-2xl font-bold text-hud-estop">E-STOP</h3>
+          <p class="font-mono text-xs text-slate-400 mt-2">Entry: d &lt; 20 cm, Sensor Fault, or Kill Switch</p>
+          <ul class="mt-4 space-y-2 text-sm text-slate-300">
+            <li class="flex items-start gap-2"><span class="text-hud-estop">▸</span>Red LED + OLED emergency alert.</li>
+            <li class="flex items-start gap-2"><span class="text-hud-estop">▸</span>Immediate 0 PWM cut &amp; PID reset.</li>
+            <li class="flex items-start gap-2"><span class="text-hud-estop">▸</span>Overrides all modes unconditionally.</li>
+          </ul>
+        </div>
+
+      </div>
+
+      <!-- 3-Tier Safety Defense Banner -->
+      <div class="rounded-2xl bg-gradient-to-r from-navy-800 via-navy-850 to-navy-800 border border-hud-estop/40 p-6 sm:p-8 shadow-xl">
+        <div class="flex items-center gap-3 mb-6">
+          <div class="w-10 h-10 rounded-xl bg-hud-estop/20 border border-hud-estop/40 flex items-center justify-center text-hud-estop">
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <div>
+            <h3 class="font-display text-xl font-bold text-white">Three-Tier Hardware &amp; Software Safety Defense</h3>
+            <p class="text-xs sm:text-sm text-slate-400">Layered protection ensures a single sensor glitch or firmware lockup can never cause a collision</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div class="rounded-xl bg-navy-950/85 border border-slate-700/80 p-5">
+            <div class="font-mono text-xs font-bold text-hud-cyan mb-1.5">TIER 01 • REDUNDANCY</div>
+            <h4 class="font-display font-bold text-white text-base">Dual Distance Sensing</h4>
+            <p class="text-sm text-slate-300 mt-1.5 leading-relaxed">
+              Primary VL53L0X laser ToF is cross-checked against an HC-SR04 ultrasonic backup. A strict 15 ms echo timeout keeps the 50 Hz loop deterministic even on open roads.
+            </p>
+          </div>
+
+          <div class="rounded-xl bg-navy-950/85 border border-slate-700/80 p-5">
+            <div class="font-mono text-xs font-bold text-hud-follow mb-1.5">TIER 02 • WATCHDOG</div>
+            <h4 class="font-display font-bold text-white text-base">Sensor-Fault Latch (&gt;0.5 s)</h4>
+            <p class="text-sm text-slate-300 mt-1.5 leading-relaxed">
+              Tracks consecutive invalid or disconnected readings. Exceeding 25 fault cycles (0.5 s at 50 Hz) automatically latches E-STOP so the vehicle never drives blind.
+            </p>
+          </div>
+
+          <div class="rounded-xl bg-navy-950/85 border border-slate-700/80 p-5">
+            <div class="font-mono text-xs font-bold text-hud-estop mb-1.5">TIER 03 • HARDWARE CUTOFF</div>
+            <h4 class="font-display font-bold text-white text-base">Physical Kill Switch &amp; Fuse</h4>
+            <p class="text-sm text-slate-300 mt-1.5 leading-relaxed">
+              A top-mounted rear emergency kill switch paired with an inline battery fuse provides instant physical power isolation completely independent of software.
+            </p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- =================================================================== -->
+  <!-- 6. PROTOTYPE HARDWARE, MECHANICAL CAD & TINKERCAD VIRTUAL DEMO      -->
+  <!-- =================================================================== -->
+  <section id="hardware" class="py-16 sm:py-24">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+      <div class="max-w-3xl mb-12">
+        <span class="font-mono text-xs font-semibold tracking-widest text-hud-cyan uppercase">05 • Embedded Platform &amp; Mechanical CAD</span>
+        <h2 class="font-display text-3xl sm:text-4xl font-bold text-white mt-2">
+          Prototype Hardware Stack, 3D Packaging &amp; Virtual Demo
+        </h2>
+        <p class="text-slate-400 mt-3 text-base sm:text-lg">
+          Engineered as a modular, two-deck 4WD test platform designed in Autodesk Fusion 360 and validated end-to-end in Tinkercad Circuits.
+        </p>
+      </div>
+
+      <!-- 6 Hardware Stack Cards (Strictly zero pricing/budget info) -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-14">
+
+        <div class="hud-card hud-card-hover rounded-2xl p-6">
+          <div class="font-mono text-[11px] font-bold text-hud-cyan uppercase tracking-wider">Compute Core</div>
+          <h3 class="font-display text-lg font-bold text-white mt-1">ESP32 Microcontroller</h3>
+          <p class="text-sm text-slate-300 mt-2 leading-relaxed">
+            Executes the deterministic 50 Hz (20 ms) control loop, handles high-speed wheel encoder GPIO interrupts, and streams live serial/Wi-Fi telemetry for PID tuning.
+          </p>
+        </div>
+
+        <div class="hud-card hud-card-hover rounded-2xl p-6">
+          <div class="font-mono text-[11px] font-bold text-hud-cruise uppercase tracking-wider">Forward Perception</div>
+          <h3 class="font-display text-lg font-bold text-white mt-1">VL53L0X ToF + HC-SR04 Backup</h3>
+          <p class="text-sm text-slate-300 mt-2 leading-relaxed">
+            Narrow-beam Time-of-Flight laser delivers fast, accurate primary gap readings over I2C, backed up by an ultrasonic sensor for dark or angled surfaces.
+          </p>
+        </div>
+
+        <div class="hud-card hud-card-hover rounded-2xl p-6">
+          <div class="font-mono text-[11px] font-bold text-hud-follow uppercase tracking-wider">Drivetrain &amp; Odometry</div>
+          <h3 class="font-display text-lg font-bold text-white mt-1">4WD Encoder Motors &amp; H-Bridge</h3>
+          <p class="text-sm text-slate-300 mt-2 leading-relaxed">
+            Four geared DC motors with quadrature encoders measure real-time wheel velocity, driven by an H-bridge PWM motor driver with exposed heatsink cooling.
+          </p>
+        </div>
+
+        <div class="hud-card hud-card-hover rounded-2xl p-6">
+          <div class="font-mono text-[11px] font-bold text-sky-400 uppercase tracking-wider">Inertial Sensing</div>
+          <h3 class="font-display text-lg font-bold text-white mt-1">MPU6050 6-Axis IMU</h3>
+          <p class="text-sm text-slate-300 mt-2 leading-relaxed">
+            Mounted at the chassis geometric center to track longitudinal braking deceleration, detect wheel slip, and minimize yaw lever-arm measurement error.
+          </p>
+        </div>
+
+        <div class="hud-card hud-card-hover rounded-2xl p-6">
+          <div class="font-mono text-[11px] font-bold text-hud-estop uppercase tracking-wider">Power &amp; Isolation</div>
+          <h3 class="font-display text-lg font-bold text-white mt-1">Battery, Buck, Fuse &amp; Kill Switch</h3>
+          <p class="text-sm text-slate-300 mt-2 leading-relaxed">
+            Centered battery pack feeds motors and an isolated DC-DC buck converter for clean 5V/3.3V logic rails, protected by an inline fuse and rear manual kill switch.
+          </p>
+        </div>
+
+        <div class="hud-card hud-card-hover rounded-2xl p-6">
+          <div class="font-mono text-[11px] font-bold text-purple-400 uppercase tracking-wider">Operator HMI</div>
+          <h3 class="font-display text-lg font-bold text-white mt-1">0.96&quot; I2C OLED &amp; Setpoint Knob</h3>
+          <p class="text-sm text-slate-300 mt-2 leading-relaxed">
+            Angled OLED bezel acts as an onboard instrument cluster displaying Mode, Distance, Speed, and PWM, paired with a rotary potentiometer to adjust cruise speed live.
+          </p>
+        </div>
+
+      </div>
+
+      <!-- 3-Zone Mechanical Packaging Overview (220 x 140 mm Fusion 360 CAD) -->
+      <div class="hud-card rounded-2xl p-6 sm:p-8 mb-12">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-6">
+          <div>
+            <span class="font-mono text-xs text-hud-cyan font-bold uppercase tracking-wider">Autodesk Fusion 360 CAD • 220 &times; 140 mm Double-Deck Chassis</span>
+            <h3 class="font-display text-2xl font-bold text-white mt-1">3-Zone Mechanical Packaging Architecture</h3>
+          </div>
+          <div class="flex flex-wrap gap-2 font-mono text-xs">
+            <span class="px-3 py-1 rounded-lg bg-navy-900 border border-slate-700 text-slate-300">Wheelbase: 124 mm</span>
+            <span class="px-3 py-1 rounded-lg bg-navy-900 border border-slate-700 text-slate-300">Deck Gap: 45 mm</span>
+            <span class="px-3 py-1 rounded-lg bg-navy-900 border border-slate-700 text-slate-300">65 mm Wheels</span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+          <!-- Interactive Side-Elevation CAD Blueprint SVG -->
+          <div class="lg:col-span-6 rounded-xl bg-navy-950 border border-slate-800 p-4">
+            <div class="font-mono text-[11px] text-slate-400 uppercase tracking-wider mb-2 flex justify-between">
+              <span>Side-Elevation Schematic (Interactive Zones)</span>
+              <span class="text-hud-cyan">220 mm &times; 140 mm</span>
+            </div>
+            <svg viewBox="0 0 520 270" class="w-full h-auto" role="img" aria-label="Double-deck 4WD ACC mechanical packaging diagram">
+              <!-- Ground line -->
+              <line x1="20" y1="240" x2="500" y2="240" stroke="#334155" stroke-width="2" stroke-dasharray="6 4"/>
+
+              <!-- Zone 1 Highlight: Front Nose -->
+              <g id="svgZone1" class="cursor-pointer transition-opacity" onclick="highlightCadZone(1)">
+                <rect x="372" y="108" width="128" height="96" rx="10" fill="rgba(0,180,216,0.10)" stroke="#00B4D8" stroke-width="1.5" stroke-dasharray="4 3"/>
+                <!-- Sensor L-Bracket -->
+                <path d="M385 186 L435 186 L435 120 L424 120 L424 176 L385 176 Z" fill="#475569" stroke="#94A3B8" stroke-width="1"/>
+                <!-- Ultrasonic cylinder -->
+                <rect x="435" y="148" width="18" height="22" rx="3" fill="#CBD5E1"/>
+                <!-- ToF sensor -->
+                <rect x="435" y="125" width="10" height="14" rx="2" fill="#00B4D8"/>
+                <!-- Sensor beam -->
+                <polygon points="453,132 496,116 496,174 453,159" fill="rgba(0,180,216,0.22)"/>
+                <text x="436" y="100" fill="#00B4D8" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700" text-anchor="middle">ZONE 1: EYES</text>
+              </g>
+
+              <!-- Zone 2 Highlight: Lower Deck -->
+              <g id="svgZone2" class="cursor-pointer transition-opacity" onclick="highlightCadZone(2)">
+                <rect x="75" y="160" width="290" height="76" rx="10" fill="rgba(245,158,11,0.08)" stroke="#F59E0B" stroke-width="1.5" stroke-dasharray="4 3"/>
+                <!-- Lower Deck Plate -->
+                <rect x="85" y="186" width="350" height="10" rx="3" fill="#334155" stroke="#64748B" stroke-width="1"/>
+                <!-- Battery Pack centered -->
+                <rect x="180" y="156" width="120" height="30" rx="4" fill="#1D4ED8" stroke="#60A5FA" stroke-width="1.2"/>
+                <text x="240" y="175" fill="#E0F2FE" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" text-anchor="middle">BATTERY (LOW CG)</text>
+                <!-- Rear & Front Wheels -->
+                <circle cx="150" cy="208" r="31" fill="#0F172A" stroke="#94A3B8" stroke-width="3"/>
+                <circle cx="150" cy="208" r="14" fill="#F59E0B" opacity="0.85"/>
+                <circle cx="335" cy="208" r="31" fill="#0F172A" stroke="#94A3B8" stroke-width="3"/>
+                <circle cx="335" cy="208" r="14" fill="#F59E0B" opacity="0.85"/>
+                <text x="240" y="258" fill="#F59E0B" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700" text-anchor="middle">ZONE 2: LOWER DECK (4WD MOTORS &amp; BATTERY)</text>
+              </g>
+
+              <!-- Brass Standoffs -->
+              <rect x="108" y="110" width="7" height="76" fill="#D97706"/>
+              <rect x="240" y="110" width="7" height="76" fill="#D97706"/>
+              <rect x="398" y="110" width="7" height="76" fill="#D97706"/>
+
+              <!-- Zone 3 Highlight: Upper Deck -->
+              <g id="svgZone3" class="cursor-pointer transition-opacity" onclick="highlightCadZone(3)">
+                <rect x="75" y="42" width="355" height="76" rx="10" fill="rgba(16,185,129,0.08)" stroke="#10B981" stroke-width="1.5" stroke-dasharray="4 3"/>
+                <!-- Upper Deck Plate -->
+                <rect x="85" y="100" width="335" height="10" rx="3" fill="#475569" stroke="#94A3B8" stroke-width="1"/>
+                <!-- Rear Kill Switch -->
+                <rect x="114" y="84" width="22" height="16" rx="2" fill="#334155"/>
+                <rect x="108" y="72" width="34" height="13" rx="6" fill="#EF4444" stroke="#FCA5A5" stroke-width="1"/>
+                <text x="125" y="65" fill="#FCA5A5" font-family="JetBrains Mono, monospace" font-size="9" font-weight="700" text-anchor="middle">E-STOP</text>
+                <!-- Angled OLED Bezel -->
+                <polygon points="175,100 185,68 197,72 187,100" fill="#00B4D8" stroke="#E0F2FE" stroke-width="1"/>
+                <text x="190" y="61" fill="#7DD3FC" font-family="JetBrains Mono, monospace" font-size="9" font-weight="700" text-anchor="middle">OLED</text>
+                <!-- ESP32 Controller -->
+                <rect x="235" y="84" width="84" height="12" rx="2" fill="#1E3A8A" stroke="#38BDF8" stroke-width="1"/>
+                <text x="277" y="77" fill="#E0F2FE" font-family="JetBrains Mono, monospace" font-size="9" font-weight="700" text-anchor="middle">ESP32 + IMU</text>
+                <!-- Heatsink Motor Driver -->
+                <rect x="336" y="76" width="46" height="24" rx="2" fill="#1E293B" stroke="#94A3B8" stroke-width="1"/>
+                <line x1="344" y1="76" x2="344" y2="96" stroke="#64748B" stroke-width="2"/>
+                <line x1="354" y1="76" x2="354" y2="96" stroke="#64748B" stroke-width="2"/>
+                <line x1="364" y1="76" x2="364" y2="96" stroke="#64748B" stroke-width="2"/>
+                <line x1="374" y1="76" x2="374" y2="96" stroke="#64748B" stroke-width="2"/>
+                <text x="255" y="34" fill="#10B981" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700" text-anchor="middle">ZONE 3: UPPER DECK (BRAIN, DASHBOARD &amp; KILL SWITCH)</text>
+              </g>
+            </svg>
+          </div>
+
+          <!-- 3-Zone Details Cards -->
+          <div class="lg:col-span-6 space-y-4">
+            <div id="cadCard1" onclick="highlightCadZone(1)" class="cursor-pointer rounded-xl bg-navy-900/90 border border-hud-cyan/40 p-4 transition">
+              <div class="font-mono text-xs font-bold text-hud-cyan">ZONE 1 • FRONT NOSE ("THE EYES")</div>
+              <h4 class="font-display font-bold text-white text-base mt-1">Unobstructed Dual-Sensor Bracket</h4>
+              <p class="text-sm text-slate-300 mt-1 leading-relaxed">
+                Dedicated L-bracket mounts both the VL53L0X ToF optical window and dual HC-SR04 ultrasonic transducers flush ahead of the front wheels—preventing tire interference and false floor echoes.
+              </p>
+            </div>
+
+            <div id="cadCard2" onclick="highlightCadZone(2)" class="cursor-pointer rounded-xl bg-navy-900/90 border border-slate-700/80 hover:border-hud-follow/60 p-4 transition">
+              <div class="font-mono text-xs font-bold text-hud-follow">ZONE 2 • LOWER DECK ("MUSCLES &amp; LOW CG")</div>
+              <h4 class="font-display font-bold text-white text-base mt-1">Drivetrain Mass &amp; Braking Pitch Control</h4>
+              <p class="text-sm text-slate-300 mt-1 leading-relaxed">
+                Recessed wheel wells clear the 65 mm tires while strapping the battery pack right down the center keeps the center of gravity low so the chassis stays flat during hard E-Stop braking.
+              </p>
+            </div>
+
+            <div id="cadCard3" onclick="highlightCadZone(3)" class="cursor-pointer rounded-xl bg-navy-900/90 border border-slate-700/80 hover:border-hud-cruise/60 p-4 transition">
+              <div class="font-mono text-xs font-bold text-hud-cruise">ZONE 3 • UPPER DECK ("BRAIN, DASHBOARD &amp; KILL SWITCH")</div>
+              <h4 class="font-display font-bold text-white text-base mt-1">EMI Isolation, Airflow &amp; Instant Safety Access</h4>
+              <p class="text-sm text-slate-300 mt-1 leading-relaxed">
+                Lifted 45 mm on six brass M3 standoffs with hex weight-reduction cutouts. Houses the ESP32, exposed heatsink motor driver, OLED telemetry bezel, and rear mushroom kill switch.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tinkercad Virtual Demo Callout Card -->
+      <div class="rounded-2xl bg-gradient-to-br from-navy-800 via-navy-850 to-navy-900 border border-hud-cyan/40 p-6 sm:p-8 shadow-2xl">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+          <div class="lg:col-span-7 space-y-3">
+            <div class="inline-flex items-center gap-2 font-mono text-xs font-bold text-hud-cyan bg-hud-cyan/10 border border-hud-cyan/30 px-3 py-1 rounded-full">
+              VIRTUAL CIRCUIT DIGITAL TWIN
+            </div>
+            <h3 class="font-display text-2xl sm:text-3xl font-bold text-white">
+              Tinkercad Circuits Live Demonstration
+            </h3>
+            <p class="text-slate-300 text-sm sm:text-base leading-relaxed">
+              Before hardware fabrication, we validated our complete 50 Hz ACC firmware, ultrasonic sensing, L293D H-bridge PWM drive, I2C LCD telemetry, status LEDs, and kill switch inside Tinkercad Circuits. Paste your team's live Tinkercad share URL below for one-click launch during your presentation.
+            </p>
+          </div>
+
+          <div class="lg:col-span-5">
+            <div class="rounded-xl bg-navy-950/90 border border-slate-700/80 p-4 sm:p-5 space-y-3">
+              <label for="tinkercadUrlInput" class="block font-mono text-xs text-slate-400 uppercase tracking-wider">
+                Tinkercad Simulation Share URL
+              </label>
+              <input
+                id="tinkercadUrlInput"
+                type="url"
+                placeholder="https://www.tinkercad.com/things/your-acc-circuit"
+                value="https://www.tinkercad.com/circuits"
+                class="w-full rounded-xl bg-navy-900 border border-slate-700 focus:border-hud-cyan focus:outline-none px-3.5 py-2.5 text-sm font-mono text-cyan-200 placeholder-slate-500"
+              />
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button type="button" onclick="openTinkercadLink()" class="rounded-xl bg-hud-cyan hover:bg-cyan-400 text-navy-950 font-semibold text-sm py-2.5 px-4 inline-flex items-center justify-center gap-2 transition">
+                  Open Simulation
+                  <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                </button>
+                <button type="button" onclick="saveAndCopyTinkercadLink()" class="rounded-xl bg-navy-800 hover:bg-navy-700 border border-slate-600 text-slate-200 font-medium text-sm py-2.5 px-4 inline-flex items-center justify-center gap-2 transition">
+                  Save &amp; Copy Link
+                </button>
+              </div>
+              <p class="text-[11px] font-mono text-slate-400">
+                Tip: Saved locally in your browser so it stays ready for your live demo.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- =================================================================== -->
+  <!-- 7. FOOTER                                                           -->
+  <!-- =================================================================== -->
+  <footer class="bg-navy-950 border-t border-slate-800/90 py-10">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
+        <div>
+          <div class="font-display font-bold text-white text-base tracking-wide">
+            Team Circuit Breakers <span class="text-hud-cyan">• Adaptive Cruise Control (ACC)</span>
+          </div>
+          <div class="text-sm text-slate-400 mt-1">
+            Department of Computer Science &amp; Engineering, IIT Ropar • Tinkering Lab Project
+          </div>
+        </div>
+        <div class="font-mono text-xs sm:text-sm text-slate-300 space-y-1 md:text-right">
+          <div>Presented by <span class="text-white font-semibold">Harkirat Singh (2026CSB1213)</span></div>
+          <div>Faculty Mentor: <span class="text-hud-cyan font-semibold">Prof. Brijesh Kumbhani</span></div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- =================================================================== -->
+  <!-- INTERACTIVE SIMULATOR, HERO HUD, CHARTS & UI LOGIC                  -->
+  <!-- =================================================================== -->
+  <script>
+    // =========================================================================
+    // 1. TOAST NOTIFICATION & MOBILE MENU
+    // =========================================================================
+    let toastTimer = null;
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      const txt = document.getElementById('toastMessage');
+      if (!el || !txt) return;
+      txt.textContent = msg;
+      el.classList.remove('opacity-0', 'translate-y-3', 'pointer-events-none');
+      el.classList.add('opacity-100', 'translate-y-0');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        el.classList.add('opacity-0', 'translate-y-3', 'pointer-events-none');
+        el.classList.remove('opacity-100', 'translate-y-0');
+      }, 2800);
+    }
+
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const mobileMenu = document.getElementById('mobileMenu');
+    const menuIconOpen = document.getElementById('menuIconOpen');
+    const menuIconClose = document.getElementById('menuIconClose');
+
+    if (mobileMenuBtn && mobileMenu) {
+      mobileMenuBtn.addEventListener('click', () => {
+        const isHidden = mobileMenu.classList.toggle('hidden');
+        menuIconOpen.classList.toggle('hidden', !isHidden);
+        menuIconClose.classList.toggle('hidden', isHidden);
+      });
+      document.querySelectorAll('.mobile-nav-link').forEach((link) => {
+        link.addEventListener('click', () => {
+          mobileMenu.classList.add('hidden');
+          menuIconOpen.classList.remove('hidden');
+          menuIconClose.classList.add('hidden');
+        });
+      });
+    }
+
+    // =========================================================================
+    // 2. CANVAS DPI-AWARE RESIZE HELPER
+    // =========================================================================
+    function fitCanvasToParent(canvas) {
+      if (!canvas || !canvas.parentElement) return { w: 0, h: 0, ctx: null };
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.floor(rect.width));
+      const h = Math.max(1, Math.floor(rect.height));
+      if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) {
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { w, h, ctx };
+    }
+
+    // Helper: draw sleek top-down vehicle
+    function drawTopDownCar(ctx, x, y, len, wid, bodyColor, accentColor, braking, headlights) {
+      ctx.save();
+      ctx.translate(x, y);
+
+      // Soft ground shadow
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.beginPath();
+      ctx.roundRect(-len / 2 + 2, -wid / 2 + 4, len, wid, 9);
+      ctx.fill();
+
+      // Wheels
+      ctx.fillStyle = '#0F172A';
+      const wx = len * 0.28;
+      const wy = wid * 0.5;
+      ctx.fillRect(-wx - 6, -wy - 2, 13, 4);
+      ctx.fillRect(wx - 7, -wy - 2, 13, 4);
+      ctx.fillRect(-wx - 6, wy - 2, 13, 4);
+      ctx.fillRect(wx - 7, wy - 2, 13, 4);
+
+      // Main chassis body
+      ctx.fillStyle = bodyColor;
+      ctx.strokeStyle = accentColor;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.roundRect(-len / 2, -wid / 2, len, wid, 9);
+      ctx.fill();
+      ctx.stroke();
+
+      // Cabin / windshield
+      ctx.fillStyle = '#0B132B';
+      ctx.beginPath();
+      ctx.roundRect(-len * 0.22, -wid * 0.34, len * 0.48, wid * 0.68, 5);
+      ctx.fill();
+
+      // Front windshield glare
+      ctx.fillStyle = 'rgba(125, 211, 252, 0.28)';
+      ctx.beginPath();
+      ctx.roundRect(len * 0.12, -wid * 0.30, len * 0.12, wid * 0.60, 2);
+      ctx.fill();
+
+      // Headlights (+X front)
+      if (headlights) {
+        ctx.fillStyle = '#E0F2FE';
+        ctx.fillRect(len / 2 - 3, -wid * 0.36, 3, 6);
+        ctx.fillRect(len / 2 - 3, wid * 0.36 - 6, 3, 6);
+      }
+
+      // Tail / Brake lights (-X rear)
+      ctx.fillStyle = braking ? '#FF2A3B' : '#991B1B';
+      ctx.fillRect(-len / 2, -wid * 0.36, 3.5, 7);
+      ctx.fillRect(-len / 2, wid * 0.36 - 7, 3.5, 7);
+      if (braking) {
+        ctx.save();
+        ctx.globalAlpha = 0.45;
+        ctx.fillStyle = '#EF4444';
+        ctx.beginPath();
+        ctx.arc(-len / 2 - 3, -wid * 0.26, 7, 0, Math.PI * 2);
+        ctx.arc(-len / 2 - 3, wid * 0.26, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    // =========================================================================
+    // 3. HERO ANIMATED RADAR HUD PREVIEW
+    // =========================================================================
+    const heroCanvas = document.getElementById('heroCanvas');
+    let heroTime = 0;
+
+    function drawHeroPreview(dt) {
+      const { w, h, ctx } = fitCanvasToParent(heroCanvas);
+      if (!ctx) return;
+      heroTime += dt;
+
+      // Dark asphalt road background
+      ctx.fillStyle = '#070D1F';
+      ctx.fillRect(0, 0, w, h);
+
+      // Subtle vertical highway lanes
+      const roadW = Math.min(w * 0.78, 320);
+      const roadX = (w - roadW) / 2;
+      ctx.fillStyle = '#0D1730';
+      ctx.fillRect(roadX, 0, roadW, h);
+
+      // Road shoulder lines
+      ctx.strokeStyle = 'rgba(0, 180, 216, 0.35)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(roadX, 0); ctx.lineTo(roadX, h);
+      ctx.moveTo(roadX + roadW, 0); ctx.lineTo(roadX + roadW, h);
+      ctx.stroke();
+
+      // Scrolling dashed lane dividers
+      const dashOffset = (heroTime * 110) % 44;
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([22, 22]);
+      ctx.lineDashOffset = -dashOffset;
+      ctx.beginPath();
+      ctx.moveTo(roadX + roadW * 0.33, 0); ctx.lineTo(roadX + roadW * 0.33, h);
+      ctx.moveTo(roadX + roadW * 0.67, 0); ctx.lineTo(roadX + roadW * 0.67, h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const centerX = w / 2;
+      const egoY = h * 0.76;
+      const leadY = h * 0.24 + Math.sin(heroTime * 1.4) * 10;
+
+      // Radar / ToF cone projected upward from Ego car to Lead car
+      const coneTopY = leadY + 26;
+      const coneBotY = egoY - 26;
+      const grad = ctx.createLinearGradient(centerX, coneBotY, centerX, coneTopY);
+      grad.addColorStop(0, 'rgba(0, 180, 216, 0.38)');
+      grad.addColorStop(1, 'rgba(0, 180, 216, 0.05)');
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(centerX - 8, coneBotY);
+      ctx.lineTo(centerX - 48, coneTopY);
+      ctx.lineTo(centerX + 48, coneTopY);
+      ctx.lineTo(centerX + 8, coneBotY);
+      ctx.closePath();
+      ctx.fill();
+
+      // Pulsing radar wavefront arcs traveling from ego toward lead car
+      for (let i = 0; i < 4; i++) {
+        const phase = ((heroTime * 0.85 + i * 0.25) % 1);
+        const r = 16 + phase * (coneBotY - coneTopY - 8);
+        const alpha = (1 - phase) * 0.75;
+        ctx.strokeStyle = `rgba(0, 180, 216, ${alpha.toFixed(2)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(centerX, coneBotY, r, -Math.PI * 0.68, -Math.PI * 0.32);
+        ctx.stroke();
+      }
+
+      // Target lock reticle around lead car
+      const lockPulse = 2 + Math.sin(heroTime * 6) * 2;
+      ctx.strokeStyle = '#F59E0B';
+      ctx.lineWidth = 1.6;
+      const bw = 42 + lockPulse;
+      const bh = 62 + lockPulse;
+      const lx = centerX - bw / 2;
+      const ly = leadY - bh / 2;
+      const cLen = 10;
+      ctx.beginPath();
+      // 4 HUD corner brackets
+      ctx.moveTo(lx, ly + cLen); ctx.lineTo(lx, ly); ctx.lineTo(lx + cLen, ly);
+      ctx.moveTo(lx + bw - cLen, ly); ctx.lineTo(lx + bw, ly); ctx.lineTo(lx + bw, ly + cLen);
+      ctx.moveTo(lx, ly + bh - cLen); ctx.lineTo(lx, ly + bh); ctx.lineTo(lx + cLen, ly + bh);
+      ctx.moveTo(lx + bw - cLen, ly + bh); ctx.lineTo(lx + bw, ly + bh); ctx.lineTo(lx + bw, ly + bh - cLen);
+      ctx.stroke();
+
+      // Draw vertical cars (rotated -90 deg so front faces UP)
+      ctx.save();
+      ctx.translate(centerX, leadY);
+      ctx.rotate(-Math.PI / 2);
+      drawTopDownCar(ctx, 0, 0, 52, 26, '#1E293B', '#94A3B8', Math.sin(heroTime * 1.4) > 0.3, false);
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(centerX, egoY);
+      ctx.rotate(-Math.PI / 2);
+      drawTopDownCar(ctx, 0, 0, 54, 28, '#142142', '#00B4D8', false, true);
+      ctx.restore();
+
+      // Floating gap indicator badge
+      const midY = (coneTopY + coneBotY) / 2;
+      const simGapVal = (32.4 + Math.sin(heroTime * 1.4) * 1.8).toFixed(1);
+      ctx.fillStyle = 'rgba(11, 19, 43, 0.88)';
+      ctx.strokeStyle = 'rgba(0, 180, 216, 0.55)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(centerX + 34, midY - 13, 86, 26, 6);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#E0F2FE';
+      ctx.font = '600 11px "JetBrains Mono", monospace';
+      ctx.fillText(`GAP ${simGapVal}m`, centerX + 42, midY + 4);
+    }
+
+    // =========================================================================
+    // 4. REAL 50 Hz CASCADED PID ACC SIMULATOR ENGINE
+    // =========================================================================
+    const SIM_CONFIGS = {
+      highway: {
+        name: 'highway',
+        speedUnit: 'km/h',
+        distUnit: 'm',
+        maxSpeedDisplay: 120,   // km/h
+        speedToPhys: 1 / 3.6,   // km/h -> m/s
+        physToSpeed: 3.6,       // m/s -> km/h
+        d0: 4.0,                // meters standstill buffer
+        eStopDist: 2.5,         // meters hard E-Stop threshold
+        followBand: 15.0,       // meters hysteresis/approach band
+        maxViewGap: 90.0,       // meters mapped across canvas
+        maxAccel: 3.2,          // m/s^2
+        maxDecel: 5.5,          // m/s^2 normal
+        eStopDecel: 9.8,        // m/s^2 emergency braking
+        kpGap: 0.72,
+        kpSpd: 36.0,
+        kiSpd: 14.0,
+        kdSpd: 1.2,
+        idleThreshold: 3.0,     // km/h
+        defaultCruise: 90,
+        defaultLead: 60,
+        defaultGap: 48.0,
+      },
+      lab: {
+        name: 'lab',
+        speedUnit: 'cm/s',
+        distUnit: 'cm',
+        maxSpeedDisplay: 100,   // cm/s
+        speedToPhys: 1.0,       // cm/s -> cm/s
+        physToSpeed: 1.0,       // cm/s -> cm/s
+        d0: 30.0,               // cm standstill buffer
+        eStopDist: 20.0,        // cm hard E-Stop threshold
+        followBand: 40.0,       // cm approach band
+        maxViewGap: 230.0,      // cm mapped across canvas
+        maxAccel: 60.0,         // cm/s^2 (exact Tinkercad spec)
+        maxDecel: 90.0,         // cm/s^2
+        eStopDecel: 220.0,      // cm/s^2 emergency stop
+        kpGap: 1.2,             // exact Tinkercad gain
+        kpSpd: 2.2,             // exact Tinkercad gain
+        kiSpd: 0.8,             // exact Tinkercad gain
+        kdSpd: 0.05,            // exact Tinkercad gain
+        idleThreshold: 5.0,     // cm/s
+        defaultCruise: 75,
+        defaultLead: 50,
+        defaultGap: 145.0,
+      }
+    };
+
+    let simMode = 'highway';
+    let cfg = SIM_CONFIGS.highway;
+
+    const simState = {
+      state: 'CRUISE',      // IDLE | CRUISE | FOLLOW | E_STOP
+      egoSpeedPhys: 0,      // m/s or cm/s
+      leadSpeedPhys: 0,     // m/s or cm/s
+      targetSpeedPhys: 0,
+      cruiseSetDisplay: 90,
+      leadSetDisplay: 60,
+      timeGap: 1.2,
+      actualGap: 48.0,      // m or cm
+      filteredGap: 48.0,
+      desiredGap: 28.0,
+      pidIntegral: 0,
+      prevSpdErr: 0,
+      pwmOut: 0,            // 0..255
+      throttlePct: 0,       // 0..100
+      killSwitch: false,
+      scenario: 'slow',
+      scenarioTime: 0,
+      roadScroll: 0,
+      cutInLateral: 0,      // 0 = in lane, -1 = adjacent lane merging in
+      history: [],          // ring buffer for telemetry plotter
+      maxHistory: 260,      // ~13 sec at 20Hz plot samples
+      sampleAccum: 0
+    };
+
+    const sliderCruise = document.getElementById('sliderCruise');
+    const sliderTimeGap = document.getElementById('sliderTimeGap');
+    const sliderLead = document.getElementById('sliderLead');
+    const highwayCanvas = document.getElementById('highwayCanvas');
+    const telemetryCanvas = document.getElementById('telemetryCanvas');
+
+    function updateControlLabels() {
+      document.getElementById('valCruiseSlider').textContent = `${Math.round(simState.cruiseSetDisplay)} ${cfg.speedUnit}`;
+      document.getElementById('valTimeGapSlider').textContent = `${simState.timeGap.toFixed(1)} s`;
+      document.getElementById('valLeadSlider').textContent = `${Math.round(simState.leadSetDisplay)} ${cfg.speedUnit}`;
+
+      document.querySelectorAll('.sim-speed-unit').forEach((el) => { el.textContent = cfg.speedUnit; });
+      document.querySelectorAll('.sim-dist-unit').forEach((el) => { el.textContent = cfg.distUnit; });
+
+      const vExpr = simMode === 'highway' ? 'v(m/s)' : 'v(cm/s)';
+      document.getElementById('liveFormulaReadout').textContent =
+        `d_des = ${cfg.d0.toFixed(1)} + ${simState.timeGap.toFixed(1)} × ${vExpr}`;
+      document.getElementById('liveEstopReadout').textContent =
+        `Hard E-Stop Trigger: d < ${cfg.eStopDist.toFixed(1)} ${cfg.distUnit}`;
+    }
+
+    function setSimMode(mode) {
+      if (!SIM_CONFIGS[mode]) return;
+      simMode = mode;
+      cfg = SIM_CONFIGS[mode];
+
+      // Update toggle pill styles
+      const btnH = document.getElementById('btnModeHighway');
+      const btnL = document.getElementById('btnModeLab');
+      if (mode === 'highway') {
+        btnH.className = 'px-4 py-2.5 rounded-xl font-mono text-xs sm:text-sm font-semibold transition bg-hud-cyan text-navy-950 shadow';
+        btnL.className = 'px-4 py-2.5 rounded-xl font-mono text-xs sm:text-sm font-semibold transition text-slate-300 hover:text-white';
+      } else {
+        btnL.className = 'px-4 py-2.5 rounded-xl font-mono text-xs sm:text-sm font-semibold transition bg-hud-cyan text-navy-950 shadow';
+        btnH.className = 'px-4 py-2.5 rounded-xl font-mono text-xs sm:text-sm font-semibold transition text-slate-300 hover:text-white';
+      }
+
+      // Configure slider ranges
+      sliderCruise.max = cfg.maxSpeedDisplay;
+      sliderLead.max = cfg.maxSpeedDisplay;
+
+      // Re-apply current scenario in new unit scale
+      applyScenario(simState.scenario, true);
+      showToast(mode === 'highway'
+        ? 'Switched to Real-Life Highway Mode (km/h & m)'
+        : 'Switched to Scaled Lab Prototype Mode (cm/s & cm)');
+    }
+
+    function highlightScenarioButton(sc) {
+      document.querySelectorAll('.scenario-btn').forEach((btn) => {
+        btn.classList.remove('border-hud-cyan', 'bg-hud-cyan/10');
+        if (btn.id !== 'scBtn-cutin') {
+          btn.classList.add('border-slate-700', 'bg-navy-900/90');
+        }
+      });
+      const active = document.getElementById(`scBtn-${sc}`);
+      if (active) {
+        active.classList.remove('border-slate-700', 'bg-navy-900/90');
+        active.classList.add('border-hud-cyan', 'bg-hud-cyan/10');
+      }
+    }
+
+    function applyScenario(sc, silent = false) {
+      simState.scenario = sc;
+      simState.scenarioTime = 0;
+      simState.killSwitch = false;
+      simState.pidIntegral = 0;
+      simState.prevSpdErr = 0;
+      simState.cutInLateral = 0;
+      simState.history = [];
+      updateKillSwitchButton();
+      highlightScenarioButton(sc);
+
+      const banner = document.getElementById('scenarioBanner');
+
+      if (sc === 'clear') {
+        simState.cruiseSetDisplay = cfg.defaultCruise;
+        simState.leadSetDisplay = cfg.maxSpeedDisplay;
+        simState.actualGap = cfg.maxViewGap * 0.92;
+        simState.egoSpeedPhys = (cfg.defaultCruise * 0.7) * cfg.speedToPhys;
+        simState.leadSpeedPhys = cfg.maxSpeedDisplay * cfg.speedToPhys;
+        banner.textContent = 'Scenario: Clear Highway — Holding Cruise Speed';
+      } else if (sc === 'slow') {
+        simState.cruiseSetDisplay = cfg.defaultCruise;
+        simState.leadSetDisplay = cfg.defaultLead;
+        simState.actualGap = cfg.defaultGap * 1.15;
+        simState.egoSpeedPhys = cfg.defaultCruise * cfg.speedToPhys;
+        simState.leadSpeedPhys = cfg.defaultLead * cfg.speedToPhys;
+        banner.textContent = 'Scenario: Slow Traffic — Smooth Gap Convergence';
+      } else if (sc === 'stopgo') {
+        simState.cruiseSetDisplay = cfg.defaultCruise;
+        simState.leadSetDisplay = cfg.defaultLead;
+        simState.actualGap = cfg.defaultGap * 0.95;
+        simState.egoSpeedPhys = cfg.defaultLead * cfg.speedToPhys;
+        simState.leadSpeedPhys = cfg.defaultLead * cfg.speedToPhys;
+        banner.textContent = 'Scenario: Stop & Go Traffic — Auto Halt & Resume';
+      } else if (sc === 'cutin') {
+        simState.cruiseSetDisplay = cfg.defaultCruise;
+        simState.leadSetDisplay = cfg.defaultLead * 0.35;
+        simState.actualGap = cfg.eStopDist * 0.78;
+        simState.egoSpeedPhys = cfg.defaultCruise * cfg.speedToPhys;
+        simState.leadSpeedPhys = (cfg.defaultLead * 0.35) * cfg.speedToPhys;
+        simState.cutInLateral = -1.0; // visually cuts in from upper lane!
+        banner.textContent = 'Scenario: Sudden Cut-In — E-STOP Collision Mitigation!';
+      }
+
+      simState.filteredGap = simState.actualGap;
+      simState.targetSpeedPhys = simState.egoSpeedPhys;
+      sliderCruise.value = Math.round(simState.cruiseSetDisplay);
+      sliderLead.value = Math.round(simState.leadSetDisplay);
+      updateControlLabels();
+
+      if (!silent) {
+        showToast(`Loaded scenario: ${sc.toUpperCase()}`);
+      }
+    }
+
+    function launchScenarioFromCard(sc) {
+      applyScenario(sc);
+      const sec = document.getElementById('simulator');
+      if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function updateKillSwitchButton() {
+      const btn = document.getElementById('btnKillSwitch');
+      const txt = document.getElementById('killSwitchText');
+      if (simState.killSwitch) {
+        btn.className = 'w-full py-3.5 px-4 rounded-xl bg-red-600 ring-2 ring-red-300 text-white font-display font-bold tracking-wide text-sm shadow-lg shadow-red-600/40 flex items-center justify-center gap-2.5 transition animate-pulse';
+        txt.textContent = 'KILL SWITCH ENGAGED — CLICK TO RELEASE';
+      } else {
+        btn.className = 'w-full py-3.5 px-4 rounded-xl bg-hud-estop hover:bg-red-500 text-white font-display font-bold tracking-wide text-sm shadow-lg shadow-hud-estop/25 flex items-center justify-center gap-2.5 transition';
+        txt.textContent = 'MANUAL KILL SWITCH (E-STOP)';
+      }
+    }
+
+    function toggleKillSwitch() {
+      simState.killSwitch = !simState.killSwitch;
+      updateKillSwitchButton();
+      showToast(simState.killSwitch ? 'MANUAL KILL SWITCH ENGAGED — Motors cut to 0 PWM!' : 'Kill switch released — Controller re-armed.');
+    }
+
+    function resetSimulation() {
+      applyScenario(simState.scenario, true);
+      showToast('Simulation reset.');
+    }
+
+    // Slider input handlers
+    sliderCruise.addEventListener('input', (e) => {
+      simState.cruiseSetDisplay = parseFloat(e.target.value);
+      updateControlLabels();
+    });
+    sliderTimeGap.addEventListener('input', (e) => {
+      simState.timeGap = parseFloat(e.target.value);
+      updateControlLabels();
+    });
+    sliderLead.addEventListener('input', (e) => {
+      simState.leadSetDisplay = parseFloat(e.target.value);
+      if (simState.scenario === 'stopgo') {
+        simState.scenario = 'slow';
+        document.getElementById('scenarioBanner').textContent = 'Scenario: Manual Lead Vehicle Speed Control';
+        highlightScenarioButton('slow');
+      }
+      updateControlLabels();
+    });
+
+    // Core 50 Hz fixed-step control tick (dt = 0.02 s)
+    function stepAccPhysics50Hz() {
+      const DT = 0.02;
+      simState.scenarioTime += DT;
+
+      // Animate lateral cut-in merge smoothly into lane
+      if (simState.cutInLateral < 0) {
+        simState.cutInLateral = Math.min(0, simState.cutInLateral + DT * 3.4);
+      }
+
+      // Automated Stop-and-Go lead speed profile (16-second cycle)
+      if (simState.scenario === 'stopgo') {
+        const t = simState.scenarioTime % 16.0;
+        let leadCmd = cfg.defaultLead;
+        if (t < 3.0) {
+          leadCmd = cfg.defaultLead;
+        } else if (t < 6.0) {
+          // Smooth brake to complete standstill
+          leadCmd = cfg.defaultLead * (1 - (t - 3.0) / 3.0);
+        } else if (t < 10.0) {
+          // Hold complete halt
+          leadCmd = 0;
+        } else if (t < 13.0) {
+          // Resume acceleration
+          leadCmd = cfg.defaultLead * 1.15 * ((t - 10.0) / 3.0);
+        } else {
+          leadCmd = cfg.defaultLead * 1.15;
+        }
+        simState.leadSetDisplay = leadCmd;
+        sliderLead.value = Math.round(leadCmd);
+        document.getElementById('valLeadSlider').textContent = `${Math.round(leadCmd)} ${cfg.speedUnit}`;
+      }
+
+      // Smoothly move lead car toward its commanded speed
+      const desiredLeadPhys = simState.leadSetDisplay * cfg.speedToPhys;
+      const leadMaxDv = cfg.maxAccel * 1.15 * DT;
+      if (desiredLeadPhys > simState.leadSpeedPhys + leadMaxDv) {
+        simState.leadSpeedPhys += leadMaxDv;
+      } else if (desiredLeadPhys < simState.leadSpeedPhys - leadMaxDv * 1.6) {
+        simState.leadSpeedPhys -= leadMaxDv * 1.6;
+      } else {
+        simState.leadSpeedPhys = desiredLeadPhys;
+      }
+
+      // 1. Sensor measurement + tiny realistic noise + EMA Low-Pass Filter (0.7 / 0.3)
+      const noiseScale = simMode === 'highway' ? 0.06 : 0.35;
+      const rawDist = Math.max(0.2, simState.actualGap + (Math.random() - 0.5) * noiseScale);
+      simState.filteredGap = 0.7 * simState.filteredGap + 0.3 * rawDist;
+
+      // 2. Compute Constant Time-Gap Desired Headway: d_des = d0 + T_gap * v
+      simState.desiredGap = cfg.d0 + simState.timeGap * simState.egoSpeedPhys;
+
+      // 3. Deterministic 4-State Machine Transitions
+      const cruisePhys = simState.cruiseSetDisplay * cfg.speedToPhys;
+      if (simState.killSwitch || simState.filteredGap < cfg.eStopDist) {
+        simState.state = 'E_STOP';
+      } else if (simState.cruiseSetDisplay < cfg.idleThreshold) {
+        simState.state = 'IDLE';
+      } else if (simState.filteredGap <= simState.desiredGap + cfg.followBand) {
+        simState.state = 'FOLLOW';
+      } else {
+        simState.state = 'CRUISE';
+      }
+
+      // 4. Outer Loop (Gap Controller) -> raw target speed
+      let rawTargetPhys = 0;
+      if (simState.state === 'CRUISE') {
+        rawTargetPhys = cruisePhys;
+      } else if (simState.state === 'FOLLOW') {
+        const gapErr = simState.filteredGap - simState.desiredGap;
+        // Blend lead speed anticipation + proportional gap error clamped to [0, cruise]
+        rawTargetPhys = Math.max(0, Math.min(cruisePhys, simState.leadSpeedPhys + cfg.kpGap * gapErr));
+        // If very close to d0 and lead is stopped, command full zero
+        if (simState.leadSpeedPhys < 0.05 && simState.filteredGap <= cfg.d0 * 1.05) {
+          rawTargetPhys = 0;
+        }
+      } else {
+        rawTargetPhys = 0;
+      }
+
+      // 5. Acceleration Slew-Rate Limiter
+      const maxDvUp = cfg.maxAccel * DT;
+      const maxDvDn = cfg.maxDecel * DT;
+      if (simState.state === 'E_STOP') {
+        simState.targetSpeedPhys = 0;
+      } else if (rawTargetPhys > simState.targetSpeedPhys + maxDvUp) {
+        simState.targetSpeedPhys += maxDvUp;
+      } else if (rawTargetPhys < simState.targetSpeedPhys - maxDvDn) {
+        simState.targetSpeedPhys -= maxDvDn;
+      } else {
+        simState.targetSpeedPhys = rawTargetPhys;
+      }
+
+      // 6. Inner Loop (PID Speed Controller with Anti-Windup)
+      if (simState.state === 'E_STOP' || simState.state === 'IDLE') {
+        simState.pwmOut = 0;
+        simState.throttlePct = 0;
+        simState.pidIntegral = 0;
+        simState.prevSpdErr = 0;
+        const brakeRate = simState.state === 'E_STOP' ? cfg.eStopDecel : cfg.maxDecel * 0.45;
+        simState.egoSpeedPhys = Math.max(0, simState.egoSpeedPhys - brakeRate * DT);
+      } else {
+        const spdErr = simState.targetSpeedPhys - simState.egoSpeedPhys;
+        const intMax = simMode === 'highway' ? 12.0 : 100.0;
+        simState.pidIntegral = Math.max(-intMax, Math.min(intMax, simState.pidIntegral + spdErr * DT));
+        const spdDeriv = (spdErr - simState.prevSpdErr) / DT;
+        simState.prevSpdErr = spdErr;
+
+        // Feedforward + PID maps smoothly to 0..255 PWM
+        const ffPwm = (simState.targetSpeedPhys / (cfg.maxSpeedDisplay * cfg.speedToPhys)) * 210.0;
+        const pidTerm = (cfg.kpSpd * spdErr) + (cfg.kiSpd * simState.pidIntegral) + (cfg.kdSpd * spdDeriv);
+        const rawPwm = Math.max(0, Math.min(255, ffPwm + pidTerm));
+        simState.pwmOut = Math.round(rawPwm);
+        simState.throttlePct = Math.round((simState.pwmOut / 255) * 100);
+
+        // Plant velocity dynamics driven by PWM & braking
+        const maxPhys = cfg.maxSpeedDisplay * cfg.speedToPhys;
+        const steadySpeed = (simState.pwmOut / 215.0) * maxPhys;
+        const accelCmd = (steadySpeed - simState.egoSpeedPhys) * 2.6;
+        const clampedAccel = Math.max(-cfg.maxDecel, Math.min(cfg.maxAccel, accelCmd));
+        simState.egoSpeedPhys = Math.max(0, Math.min(maxPhys * 1.05, simState.egoSpeedPhys + clampedAccel * DT));
+      }
+
+      // 7. Kinematics: update actual inter-vehicle gap
+      const prevGap = simState.actualGap;
+      simState.actualGap += (simState.leadSpeedPhys - simState.egoSpeedPhys) * DT;
+
+      // Clamp gap cleanly so lead car doesn't vanish infinitely far in Clear Highway mode
+      const minPhysGap = simMode === 'highway' ? 1.0 : 8.0;
+      const maxPhysGap = cfg.maxViewGap * 1.08;
+      if (simState.actualGap < minPhysGap) {
+        simState.actualGap = minPhysGap;
+        simState.egoSpeedPhys = Math.min(simState.egoSpeedPhys, simState.leadSpeedPhys);
+      } else if (simState.actualGap > maxPhysGap) {
+        simState.actualGap = maxPhysGap;
+      }
+
+      // Scroll road markings visually proportional to ego speed
+      const scrollFactor = simMode === 'highway' ? 12.5 : 3.8;
+      simState.roadScroll = (simState.roadScroll + simState.egoSpeedPhys * scrollFactor * DT) % 64;
+
+      // Record telemetry sample at 20 Hz for smooth chart
+      simState.sampleAccum += DT;
+      if (simState.sampleAccum >= 0.05) {
+        simState.sampleAccum = 0;
+        simState.history.push({
+          gap: simState.filteredGap,
+          desGap: simState.desiredGap,
+          egoV: simState.egoSpeedPhys * cfg.physToSpeed,
+          leadV: simState.leadSpeedPhys * cfg.physToSpeed,
+          state: simState.state
+        });
+        if (simState.history.length > simState.maxHistory) {
+          simState.history.shift();
+        }
+      }
+    }
+
+    // Update OLED / Digital Telemetry Readouts
+    function updateHudDom() {
+      const egoDisp = simState.egoSpeedPhys * cfg.physToSpeed;
+      const leadDisp = simState.leadSpeedPhys * cfg.physToSpeed;
+
+      document.getElementById('hudEgoSpeed').textContent = egoDisp.toFixed(1);
+      document.getElementById('hudLeadSpeed').textContent = leadDisp.toFixed(1);
+      document.getElementById('hudActualGap').textContent = simState.filteredGap.toFixed(1);
+      document.getElementById('hudDesiredGap').textContent = simState.desiredGap.toFixed(1);
+      document.getElementById('hudThrottle').textContent = `${simState.throttlePct}%`;
+      document.getElementById('hudPwmSub').textContent = `${simState.pwmOut} / 255`;
+
+      const badge = document.getElementById('oledStateBadge');
+      const dot = document.getElementById('simStatusDot');
+
+      if (simState.state === 'CRUISE') {
+        badge.textContent = 'CRUISE';
+        badge.className = 'font-mono text-xs sm:text-sm font-bold px-3 py-1 rounded-lg bg-hud-cruise/20 text-hud-cruise border border-hud-cruise/50';
+        dot.className = 'w-3 h-3 rounded-full bg-hud-cruise';
+      } else if (simState.state === 'FOLLOW') {
+        badge.textContent = 'FOLLOW';
+        badge.className = 'font-mono text-xs sm:text-sm font-bold px-3 py-1 rounded-lg bg-hud-follow/20 text-hud-follow border border-hud-follow/50';
+        dot.className = 'w-3 h-3 rounded-full bg-hud-follow';
+      } else if (simState.state === 'E_STOP') {
+        badge.textContent = 'E-STOP!';
+        badge.className = 'font-mono text-xs sm:text-sm font-bold px-3 py-1 rounded-lg bg-hud-estop/25 text-hud-estop border border-hud-estop animate-pulse';
+        dot.className = 'w-3 h-3 rounded-full bg-hud-estop animate-ping';
+      } else {
+        badge.textContent = 'IDLE';
+        badge.className = 'font-mono text-xs sm:text-sm font-bold px-3 py-1 rounded-lg bg-slate-500/20 text-slate-300 border border-slate-500/50';
+        dot.className = 'w-3 h-3 rounded-full bg-hud-idle';
+      }
+    }
+
+    // Draw 2D Top-Down Highway Simulation Canvas
+    function drawHighwayCanvas() {
+      const { w, h, ctx } = fitCanvasToParent(highwayCanvas);
+      if (!ctx) return;
+
+      // Sky/verge dark navy
+      ctx.fillStyle = '#070D1F';
+      ctx.fillRect(0, 0, w, h);
+
+      // Highway road surface
+      const roadTop = h * 0.20;
+      const roadH = h * 0.60;
+      ctx.fillStyle = '#111C33';
+      ctx.fillRect(0, roadTop, w, roadH);
+
+      // Road shoulders
+      ctx.strokeStyle = 'rgba(0, 180, 216, 0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(0, roadTop); ctx.lineTo(w, roadTop);
+      ctx.moveTo(0, roadTop + roadH); ctx.lineTo(w, roadTop + roadH);
+      ctx.stroke();
+
+      // Scrolling lane divider (upper passing lane / main ACC lane)
+      const laneSplitY = roadTop + roadH * 0.42;
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([28, 36]);
+      ctx.lineDashOffset = simState.roadScroll;
+      ctx.beginPath();
+      ctx.moveTo(0, laneSplitY);
+      ctx.lineTo(w, laneSplitY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Coordinates for Ego car & Lead car along main lane
+      const mainLaneY = roadTop + roadH * 0.72;
+      const carLen = Math.min(72, Math.max(52, w * 0.095));
+      const carWid = carLen * 0.48;
+      const egoX = Math.max(carLen * 0.9, w * 0.16);
+      const egoNoseX = egoX + carLen / 2;
+      const maxSpanPx = w - egoNoseX - carLen * 0.95;
+
+      const gapRatio = Math.max(0.02, Math.min(1.0, simState.actualGap / cfg.maxViewGap));
+      const desRatio = Math.max(0.02, Math.min(1.0, simState.desiredGap / cfg.maxViewGap));
+      const estopRatio = Math.max(0.01, Math.min(1.0, cfg.eStopDist / cfg.maxViewGap));
+
+      const leadRearX = egoNoseX + gapRatio * maxSpanPx;
+      const leadX = leadRearX + carLen / 2;
+      const leadY = mainLaneY + simState.cutInLateral * (roadH * 0.44);
+
+      const desX = egoNoseX + desRatio * maxSpanPx;
+      const estopX = egoNoseX + estopRatio * maxSpanPx;
+
+      // Determine semantic state color
+      let stateColor = '#94A3B8';
+      let coneFill = 'rgba(148, 163, 184, 0.16)';
+      if (simState.state === 'CRUISE') {
+        stateColor = '#10B981';
+        coneFill = 'rgba(16, 185, 129, 0.22)';
+      } else if (simState.state === 'FOLLOW') {
+        stateColor = '#F59E0B';
+        coneFill = 'rgba(245, 158, 11, 0.25)';
+      } else if (simState.state === 'E_STOP') {
+        stateColor = '#EF4444';
+        coneFill = 'rgba(239, 68, 68, 0.34)';
+      }
+
+      // Draw E-STOP danger line inside lane
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.75)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(estopX, laneSplitY + 4);
+      ctx.lineTo(estopX, roadTop + roadH - 4);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Draw Desired Gap (d_des) marker line
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.85)';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath();
+      ctx.moveTo(desX, laneSplitY + 2);
+      ctx.lineTo(desX, roadTop + roadH - 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Label for Desired Gap
+      ctx.fillStyle = '#F59E0B';
+      ctx.font = '600 10px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`d_des (${simState.desiredGap.toFixed(1)}${cfg.distUnit})`, Math.min(w - 58, Math.max(egoNoseX + 46, desX)), roadTop + roadH + 16);
+
+      // Draw Front Sensor Cone (from Ego Nose to Lead Rear)
+      const coneEndX = Math.max(egoNoseX + 12, leadRearX);
+      const coneHalfSpread = Math.min(carWid * 0.92, 10 + (coneEndX - egoNoseX) * 0.08);
+      const grad = ctx.createLinearGradient(egoNoseX, mainLaneY, coneEndX, mainLaneY);
+      grad.addColorStop(0, coneFill);
+      grad.addColorStop(1, 'rgba(0, 180, 216, 0.04)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(egoNoseX, mainLaneY - 5);
+      ctx.lineTo(coneEndX, mainLaneY - coneHalfSpread);
+      ctx.lineTo(coneEndX, mainLaneY + coneHalfSpread);
+      ctx.lineTo(egoNoseX, mainLaneY + 5);
+      ctx.closePath();
+      ctx.fill();
+
+      // Subtle radar pulse wave inside sensor cone
+      const pulsePhase = (performance.now() * 0.0016) % 1;
+      const pulseX = egoNoseX + pulsePhase * (coneEndX - egoNoseX);
+      ctx.strokeStyle = stateColor;
+      ctx.globalAlpha = (1 - pulsePhase) * 0.7;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(egoNoseX, mainLaneY, Math.max(4, pulseX - egoNoseX), -0.22, 0.22);
+      ctx.stroke();
+      ctx.globalAlpha = 1.0;
+
+      // Actual Gap Measurement Bracket above cars
+      const bracketY = roadTop - 14;
+      ctx.strokeStyle = '#00B4D8';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(egoNoseX, bracketY + 6);
+      ctx.lineTo(egoNoseX, bracketY);
+      ctx.lineTo(leadRearX, bracketY);
+      ctx.lineTo(leadRearX, bracketY + 6);
+      ctx.stroke();
+
+      const midBracketX = (egoNoseX + leadRearX) / 2;
+      ctx.fillStyle = '#E0F2FE';
+      ctx.font = '700 11px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`GAP: ${simState.filteredGap.toFixed(1)} ${cfg.distUnit}`, Math.max(70, Math.min(w - 70, midBracketX)), bracketY - 6);
+
+      // Draw Ego ACC Vehicle & Lead Vehicle
+      const egoBraking = simState.state === 'E_STOP' || simState.throttlePct < 8;
+      const leadBraking = simState.leadSpeedPhys < 0.2 || simState.leadSetDisplay < (simState.leadSpeedPhys * cfg.physToSpeed - 2);
+
+      drawTopDownCar(ctx, egoX, mainLaneY, carLen, carWid, '#142142', stateColor, egoBraking, true);
+      drawTopDownCar(ctx, leadX, leadY, carLen, carWid, '#1E293B', '#94A3B8', leadBraking, false);
+
+      // Car captions
+      ctx.font = '700 10px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = stateColor;
+      ctx.fillText('EGO ACC', egoX, mainLaneY + carWid * 0.5 + 15);
+      ctx.fillStyle = '#CBD5E1';
+      ctx.fillText('LEAD', leadX, leadY + carWid * 0.5 + 15);
+
+      // Emergency flashing banner overlay inside canvas when in E-STOP
+      if (simState.state === 'E_STOP') {
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.16)';
+        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = '#EF4444';
+        ctx.font = '700 13px "JetBrains Mono", monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(simState.killSwitch ? '● MANUAL KILL SWITCH ACTIVE' : '● COLLISION GUARD — E-STOP!', w - 14, 22);
+      }
+    }
+
+    // Draw Live Dual-Trace Telemetry Graph (Top: Gap, Bottom: Speed)
+    function drawTelemetryCanvas() {
+      const { w, h, ctx } = fitCanvasToParent(telemetryCanvas);
+      if (!ctx) return;
+
+      ctx.fillStyle = '#070D1F';
+      ctx.fillRect(0, 0, w, h);
+
+      const padL = 48;
+      const padR = 14;
+      const padT = 14;
+      const padB = 14;
+      const gapMid = 18;
+      const plotW = Math.max(10, w - padL - padR);
+      const plotH = Math.max(20, (h - padT - padB - gapMid) / 2);
+
+      const topY0 = padT;
+      const botY0 = padT + plotH + gapMid;
+
+      function drawPlotBox(y0, maxVal, unitLabel, title) {
+        ctx.fillStyle = '#0C152E';
+        ctx.strokeStyle = 'rgba(51, 65, 85, 0.8)';
+        ctx.lineWidth = 1;
+        ctx.fillRect(padL, y0, plotW, plotH);
+        ctx.strokeRect(padL, y0, plotW, plotH);
+
+        // Horizontal gridlines (0%, 50%, 100%)
+        ctx.strokeStyle = 'rgba(51, 65, 85, 0.45)';
+        ctx.setLineDash([3, 4]);
+        for (let k = 1; k <= 2; k++) {
+          const gy = y0 + (plotH * k) / 3;
+          ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(padL + plotW, gy); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Y-axis tick labels
+        ctx.fillStyle = '#94A3B8';
+        ctx.font = '500 10px "JetBrains Mono", monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${Math.round(maxVal)}`, padL - 6, y0 + 9);
+        ctx.fillText(`${Math.round(maxVal / 2)}`, padL - 6, y0 + plotH / 2 + 3);
+        ctx.fillText('0', padL - 6, y0 + plotH - 2);
+
+        // Title inside top-left
+        ctx.fillStyle = '#CBD5E1';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${title} (${unitLabel})`, padL + 8, y0 + 13);
+      }
+
+      const maxGapPlot = cfg.maxViewGap * 1.05;
+      const maxSpdPlot = cfg.maxSpeedDisplay * 1.1;
+
+      drawPlotBox(topY0, maxGapPlot, cfg.distUnit, 'GAP TRACKING');
+      drawPlotBox(botY0, maxSpdPlot, cfg.speedUnit, 'VELOCITY');
+
+      // E-Stop threshold dotted red line on top plot
+      const estopY = topY0 + plotH - (cfg.eStopDist / maxGapPlot) * plotH;
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.75)';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(padL, estopY); ctx.lineTo(padL + plotW, estopY); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Cruise setpoint dotted cyan line on bottom plot
+      const cruiseY = botY0 + plotH - (simState.cruiseSetDisplay / maxSpdPlot) * plotH;
+      ctx.strokeStyle = 'rgba(0, 180, 216, 0.55)';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(padL, cruiseY); ctx.lineTo(padL + plotW, cruiseY); ctx.stroke();
+      ctx.setLineDash([]);
+
+      const hist = simState.history;
+      if (hist.length < 2) return;
+
+      function plotSeries(accessor, y0, maxVal, color, lineWidth, dashed = false) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        if (dashed) ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        const stepX = plotW / (simState.maxHistory - 1);
+        const startOffset = simState.maxHistory - hist.length;
+        for (let i = 0; i < hist.length; i++) {
+          const val = Math.max(0, Math.min(maxVal, accessor(hist[i])));
+          const px = padL + (startOffset + i) * stepX;
+          const py = y0 + plotH - (val / maxVal) * plotH;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Top subplot traces: Desired Gap (amber dashed) & Actual Gap (cyan solid)
+      plotSeries((d) => d.desGap, topY0, maxGapPlot, '#F59E0B', 1.8, true);
+      plotSeries((d) => d.gap, topY0, maxGapPlot, '#00B4D8', 2.2, false);
+
+      // Bottom subplot traces: Lead Speed (light slate dashed) & Ego Speed (emerald solid)
+      plotSeries((d) => d.leadV, botY0, maxSpdPlot, '#CBD5E1', 1.7, true);
+      plotSeries((d) => d.egoV, botY0, maxSpdPlot, '#10B981', 2.3, false);
+    }
+
+    // =========================================================================
+    // 5. TIME-GAP MINI-CALCULATOR (SECTION 4)
+    // =========================================================================
+    const calcSpeedSlider = document.getElementById('calcSpeedSlider');
+    const calcTgapSlider = document.getElementById('calcTgapSlider');
+
+    function updateTimeGapCalculator() {
+      const v = parseFloat(calcSpeedSlider.value);
+      const tGap = parseFloat(calcTgapSlider.value);
+      const d0 = 30.0;
+      const dyn = tGap * v;
+      const dDes = d0 + dyn;
+
+      document.getElementById('calcSpeedLabel').textContent = `${v.toFixed(0)} cm/s`;
+      document.getElementById('calcTgapLabel').textContent = `${tGap.toFixed(1)} s`;
+      document.getElementById('calcTgapVal').textContent = `${tGap.toFixed(1)} s`;
+      document.getElementById('calcDdesVal').textContent = `${dDes.toFixed(1)} cm`;
+      document.getElementById('calcBreakdownText').textContent =
+        `30 cm standstill + ${dyn.toFixed(1)} cm dynamic = ${dDes.toFixed(1)} cm`;
+
+      // Scale dynamic bar cleanly across a 230 cm visual bar
+      const pct = Math.max(0, Math.min(81.25, (dyn / 230.0) * 100));
+      document.getElementById('calcDynamicBar').style.width = `${pct.toFixed(1)}%`;
+    }
+
+    calcSpeedSlider.addEventListener('input', updateTimeGapCalculator);
+    calcTgapSlider.addEventListener('input', updateTimeGapCalculator);
+
+    // =========================================================================
+    // 6. INTERACTIVE 5-STAGE CASCADED PIPELINE DIAGRAM
+    // =========================================================================
+    const PIPELINE_STAGES = [
+      {
+        title: 'Stage 01 — Dual Sensing & EMA Low-Pass Filter',
+        tag: 'Perception Layer',
+        desc: 'Reads the primary VL53L0X Time-of-Flight laser sensor over I2C and cross-checks against the HC-SR04 ultrasonic backup (with a 15 ms echo timeout to preserve 50 Hz timing). An Exponential Moving Average filter removes sudden jitter spikes while keeping obstacle detection latency well below 100 ms.',
+        formula: 'd_filt[k] = 0.7 × d_filt[k-1] + 0.3 × d_raw[k]   |   Fault Watchdog: >25 timeouts → E-STOP'
+      },
+      {
+        title: 'Stage 02 — Outer Gap Controller (Headway Regulation)',
+        tag: 'Outer Control Loop',
+        desc: 'Computes the dynamic desired spacing d_des = d0 + T_gap × v from current encoder speed. In FOLLOW mode, the gap error (d_filt - d_des) proportionally adjusts the requested target speed—clamped strictly between 0 and the driver\'s cruise setpoint so the vehicle never exceeds the set speed.',
+        formula: 'e_gap = d_filt - (d_0 + T_gap · v_meas)   →   v_raw = clamp(v_set + Kp_gap · e_gap, 0, v_set)'
+      },
+      {
+        title: 'Stage 03 — Acceleration Slew-Rate Limiter',
+        tag: 'Ride Comfort & Traction',
+        desc: 'Caps the maximum velocity change allowed per 20 ms tick (a_max = 60 cm/s² on the scaled prototype). This prevents sudden wheel-spin surges when a slower car leaves the lane, improves energy efficiency, and protects gear-motor teeth and battery rails from inrush current spikes.',
+        formula: 'Δv_max = a_max · Δt   →   v_target[k] = clamp(v_raw, v_target[k-1] - Δv_max, v_target[k-1] + Δv_max)'
+      },
+      {
+        title: 'Stage 04 — Inner PID Speed Loop with Anti-Windup',
+        tag: 'Inner Control Loop',
+        desc: 'Regulates actual wheel velocity to match v_target regardless of battery voltage sag, carpet friction, or slight inclines. The integral accumulator is strictly clamped (anti-windup) during actuator saturation and immediately reset to zero during IDLE or E-STOP transitions.',
+        formula: 'PWM = clamp(Kp·e_v + Ki·clamp(∫e_v dt, -I_max, I_max) + Kd·(de_v/dt), 0, 255)'
+      },
+      {
+        title: 'Stage 05 — 4WD Encoder Plant & Hardware ISR Feedback',
+        tag: 'Actuation & Odometry',
+        desc: 'The H-bridge motor driver applies the PWM duty cycle across all four DC encoder motors. Hardware GPIO interrupts (ISRs) count quadrature encoder ticks asynchronously and compute exact vehicle speed every 20 ms to close both the inner PID loop and outer time-gap policy.',
+        formula: 'v_meas = (encoder_ticks × cm_per_tick) / 0.02 s   →   Feeds Inner PID & d_des = d_0 + T_gap·v_meas'
+      }
+    ];
+
+    function selectPipelineStage(index) {
+      const stage = PIPELINE_STAGES[index];
+      if (!stage) return;
+
+      document.querySelectorAll('.pipeline-btn').forEach((btn) => {
+        const idx = parseInt(btn.getAttribute('data-stage'), 10);
+        if (idx === index) {
+          btn.className = 'pipeline-btn text-left rounded-xl p-4 border-2 border-hud-cyan bg-hud-cyan/15 transition';
+        } else {
+          btn.className = 'pipeline-btn text-left rounded-xl p-4 border border-slate-700 bg-navy-900/90 hover:border-hud-cyan/60 transition';
+        }
+      });
+
+      document.getElementById('stageDetailTitle').textContent = stage.title;
+      document.getElementById('stageDetailTag').textContent = stage.tag;
+      document.getElementById('stageDetailDesc').textContent = stage.desc;
+      document.getElementById('stageDetailFormula').textContent = stage.formula;
+    }
+
+    // =========================================================================
+    // 7. CAD 3-ZONE INTERACTIVE HIGHLIGHTER
+    // =========================================================================
+    function highlightCadZone(zoneNum) {
+      const colors = { 1: 'border-hud-cyan/60', 2: 'border-hud-follow/60', 3: 'border-hud-cruise/60' };
+      [1, 2, 3].forEach((n) => {
+        const card = document.getElementById(`cadCard${n}`);
+        const svgG = document.getElementById(`svgZone${n}`);
+        if (!card || !svgG) return;
+        card.classList.remove('border-hud-cyan/60', 'border-hud-follow/60', 'border-hud-cruise/60', 'border-hud-cyan/40', 'bg-navy-800');
+        if (n === zoneNum) {
+          card.classList.add(colors[n], 'bg-navy-800');
+          svgG.style.opacity = '1';
+        } else {
+          card.classList.add('border-slate-700/80');
+          svgG.style.opacity = '0.42';
+        }
+      });
+    }
+
+    // =========================================================================
+    // 8. TINKERCAD LINK PERSISTENCE & CLIPBOARD (NO alert())
+    // =========================================================================
+    const TINKERCAD_STORAGE_KEY = 'circuit_breakers_tinkercad_url';
+
+    function loadSavedTinkercadUrl() {
+      try {
+        const saved = localStorage.getItem(TINKERCAD_STORAGE_KEY);
+        if (saved) {
+          document.getElementById('tinkercadUrlInput').value = saved;
+        }
+      } catch (e) {
+        // Ignore storage restrictions in sandboxed iframes
+      }
+    }
+
+    function openTinkercadLink() {
+      const input = document.getElementById('tinkercadUrlInput');
+      let url = (input.value || '').trim();
+      if (!url) {
+        showToast('Please enter a Tinkercad simulation URL first.');
+        return;
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        url = 'https://' + url;
+      }
+      try { localStorage.setItem(TINKERCAD_STORAGE_KEY, url); } catch (e) {}
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+
+    function saveAndCopyTinkercadLink() {
+      const input = document.getElementById('tinkercadUrlInput');
+      const url = (input.value || '').trim();
+      if (!url) {
+        showToast('Enter a valid URL before saving.');
+        return;
+      }
+      try { localStorage.setItem(TINKERCAD_STORAGE_KEY, url); } catch (e) {}
+
+      // Copy using iframe-safe document.execCommand('copy')
+      try {
+        input.focus();
+        input.select();
+        document.execCommand('copy');
+        showToast('Tinkercad URL saved and copied to clipboard!');
+      } catch (e) {
+        showToast('Tinkercad URL saved for your demo.');
+      }
+    }
+
+    // =========================================================================
+    // 9. MAIN ANIMATION LOOP (50 Hz FIXED-STEP ACC PHYSICS + 60 FPS RENDER)
+    // =========================================================================
+    let lastFrameTime = null;
+    let physicsAccum = 0;
+
+    function animationLoop(timestamp) {
+      if (lastFrameTime === null) lastFrameTime = timestamp;
+      const frameDt = Math.min(0.05, (timestamp - lastFrameTime) / 1000);
+      lastFrameTime = timestamp;
+
+      // Fixed 50 Hz (20 ms) physics accumulator
+      physicsAccum += frameDt;
+      while (physicsAccum >= 0.02) {
+        stepAccPhysics50Hz();
+        physicsAccum -= 0.02;
+      }
+
+      // Render all canvases + HUD readouts
+      drawHeroPreview(frameDt);
+      drawHighwayCanvas();
+      drawTelemetryCanvas();
+      updateHudDom();
+
+      requestAnimationFrame(animationLoop);
+    }
+
+    // Initialize everything cleanly on window load
+    window.addEventListener('load', () => {
+      loadSavedTinkercadUrl();
+      selectPipelineStage(0);
+      updateTimeGapCalculator();
+      applyScenario('slow', true);
+      requestAnimationFrame(animationLoop);
+    });
+
+    // Redraw cleanly on window resize
+    window.addEventListener('resize', () => {
+      drawHeroPreview(0);
+      drawHighwayCanvas();
+      drawTelemetryCanvas();
+    });
+  </script>
+</body>
+</html>
